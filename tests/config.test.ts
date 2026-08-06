@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ConfigError, describeCapabilities, loadConfig } from "../src/config.js";
+import { DEFAULT_ALLOWED_HOSTS, isAllowedHost } from "../src/uploads/fetch-url.js";
 
 const TOKEN = "a".repeat(40);
 const base = () => ({ LEXWARE_API_KEY: "key", MCP_AUTH_TOKEN: TOKEN }) as NodeJS.ProcessEnv;
@@ -224,6 +225,29 @@ describe("loadConfig", () => {
   it("records no override warning when drafts is left at its default", () => {
     const c = loadConfig({ ...base(), LEXWARE_ENABLE_FINALIZE: "true" } as NodeJS.ProcessEnv);
     expect(c.warnings).toEqual([]);
+  });
+
+  it("defaults the upload host allow-list to the built-in list", () => {
+    expect(loadConfig(base()).uploadAllowedHosts).toEqual(DEFAULT_ALLOWED_HOSTS);
+  });
+
+  it("LEXWARE_UPLOAD_ALLOWED_HOSTS replaces the defaults rather than extending them", () => {
+    const c = loadConfig({
+      ...base(),
+      LEXWARE_UPLOAD_ALLOWED_HOSTS: "files.example.com, Cdn.Example.Org , ",
+    } as NodeJS.ProcessEnv);
+    // Lower-cased, trimmed, blanks dropped — and the Microsoft defaults are GONE, which
+    // is the point: an operator must be able to opt out of them.
+    expect(c.uploadAllowedHosts).toEqual(["files.example.com", "cdn.example.org"]);
+    expect(c.uploadAllowedHosts).not.toContain("sharepoint.com");
+  });
+
+  it("an explicitly empty LEXWARE_UPLOAD_ALLOWED_HOSTS blocks every host (fail closed)", () => {
+    const c = loadConfig({ ...base(), LEXWARE_UPLOAD_ALLOWED_HOSTS: "" } as NodeJS.ProcessEnv);
+    expect(c.uploadAllowedHosts).toEqual([]);
+    // Empty must mean "nothing allowed", never "everything allowed".
+    expect(isAllowedHost("sharepoint.com", c.uploadAllowedHosts)).toBe(false);
+    expect(isAllowedHost("files.example.com", c.uploadAllowedHosts)).toBe(false);
   });
 
   it("rejects an invalid PORT", () => {
