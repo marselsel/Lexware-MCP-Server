@@ -74,9 +74,24 @@ export function uploadPageHtml(ticket: string): string {
       });
       const body = await res.json().catch(() => ({}));
       if (res.ok) {
-        out.innerHTML = "Done. Lexware file id: <code>" + body.fileId + "</code><br>The model can now pick it up with <code>get-upload-result</code>.";
+        // DOM nodes, never an HTML-string assignment — the same rule the error path
+        // below follows. body.fileId is whatever the Lexware API returned, i.e. a value
+        // from outside this server's trust boundary; built as a text node it still
+        // renders inside <code>, but nothing in it can ever be parsed as markup.
+        const id = document.createElement("code");
+        id.textContent = body.fileId == null ? "" : String(body.fileId);
+        const tool = document.createElement("code");
+        tool.textContent = "get-upload-result";
+        out.replaceChildren(
+          "Done. Lexware file id: ",
+          id,
+          document.createElement("br"),
+          "The model can now pick it up with ",
+          tool,
+          ".",
+        );
       } else {
-        // textContent, not innerHTML: body.error can carry up to ~2000 chars of raw
+        // textContent, never an HTML-string assignment: body.error can carry ~2000 chars of raw
         // upstream response text, which must render as literal text, not markup.
         out.textContent = "Failed (HTTP " + res.status + "): " + (body.error || "");
       }

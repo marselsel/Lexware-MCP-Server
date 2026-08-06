@@ -92,6 +92,36 @@ describe("TicketStore", () => {
     expect(() => store.release("does-not-exist")).not.toThrow();
   });
 
+  // --- expired entries are removed on sight, not only on the next create() -------
+  //
+  // Retention is not directly observable through the store's public API (the Map is
+  // private and both an evicted and a merely hidden entry answer the same way), so
+  // these use the injected clock: stepping it BACK past expiresAt — what an NTP
+  // correction does to a real one — makes the difference visible. An entry that was
+  // only hidden becomes usable again; an entry that was actually deleted stays gone.
+
+  it("peek() deletes the expired entry it reports as gone", () => {
+    let now = 0;
+    const store = new TicketStore(60_000, () => now);
+    const t = store.create({ type: "voucher" });
+    now = 60_001;
+    expect(store.peek(t.ticket)).toBeUndefined();
+    now = 0; // clock steps back
+    expect(store.peek(t.ticket)).toBeUndefined();
+    expect(() => store.claim(t.ticket)).toThrow(TicketError);
+  });
+
+  it("claim() deletes the expired entry it rejects", () => {
+    let now = 0;
+    const store = new TicketStore(60_000, () => now);
+    const t = store.create({ type: "voucher" });
+    now = 60_001;
+    expect(() => store.claim(t.ticket)).toThrow(TicketError);
+    now = 0; // clock steps back
+    expect(() => store.claim(t.ticket)).toThrow(TicketError);
+    expect(store.peek(t.ticket)).toBeUndefined();
+  });
+
   it("release() after complete() does not make the ticket usable again", () => {
     const store = new TicketStore(60_000, () => 0);
     const t = store.create({ type: "voucher" });
