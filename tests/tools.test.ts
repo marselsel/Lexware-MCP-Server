@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { type Config, loadConfig } from "../src/config.js";
 import type { LexwareClient } from "../src/lexware/client.js";
 import { registerTools } from "../src/tools/index.js";
+import { TicketStore } from "../src/uploads/tickets.js";
 
 const READ_TOOLS = [
   "get-profile",
@@ -60,6 +61,10 @@ const DRAFT_TOOLS = [
   "update-voucher",
   "upload-voucher-file",
   "upload-file",
+  // expansion: ticket-gated / URL-based upload, no base64 through the model context
+  "create-upload-ticket",
+  "get-upload-result",
+  "upload-file-from-url",
 ];
 const FINALIZE_TOOLS = [
   "create-finalized-invoice",
@@ -85,7 +90,7 @@ function registeredNames(config: Config): string[] {
       return fakeServer;
     },
   } as unknown as McpServer;
-  registerTools(fakeServer, {} as unknown as LexwareClient, config);
+  registerTools(fakeServer, {} as unknown as LexwareClient, config, new TicketStore(), "https://mcp.example.test");
   return names.sort();
 }
 
