@@ -1,6 +1,7 @@
 import type { McpServer } from "skybridge/server";
 import type { Config } from "../config.js";
 import type { LexwareClient } from "../lexware/client.js";
+import type { TicketStore } from "../uploads/tickets.js";
 import {
   registerArticleDeleteTools,
   registerArticleReadTools,
@@ -20,13 +21,20 @@ import {
 import { registerFileReadTools, registerFileWriteTools } from "./files.js";
 import { registerProfileTools } from "./profile.js";
 import { registerReferenceReadTools } from "./reference.js";
+import { registerUploadTools } from "./uploads.js";
 import { registerVoucherWriteTools } from "./vouchers.js";
 
 /**
  * Register MCP tools according to the resolved capability tiers. Only enabled
  * tiers are registered — a disabled tool is never advertised to the model.
  */
-export function registerTools(server: McpServer, client: LexwareClient, config: Config): void {
+export function registerTools(
+  server: McpServer,
+  client: LexwareClient,
+  config: Config,
+  uploadTickets: TicketStore,
+  publicBaseUrl: string,
+): void {
   const { capabilities } = config;
 
   // Read tier — always on.
@@ -45,6 +53,7 @@ export function registerTools(server: McpServer, client: LexwareClient, config: 
     registerDocumentDraftTools(server, client);
     registerVoucherWriteTools(server, client);
     registerFileWriteTools(server, client);
+    registerUploadTools(server, client, uploadTickets, publicBaseUrl, config.uploadAllowedHosts);
   }
 
   // Finalize / sensitive & irreversible tier (off by default).

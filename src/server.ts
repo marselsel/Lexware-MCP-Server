@@ -5,40 +5,12 @@ import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { LexwareClient } from "./lexware/client.js";
 import { buildOAuthMetadata, createAccessTokenVerifier } from "./oauth.js";
 import { registerTools } from "./tools/index.js";
+import { deferBodyParsingFor, isMcpPath, isUploadPath } from "./server-body-parsing.js";
+import { registerUploadRoutes } from "./uploads/routes.js";
+import { TicketStore } from "./uploads/tickets.js";
 
 /** Base64 file uploads (upload-file / upload-voucher-file) travel inline in the JSON-RPC body. */
 const JSON_BODY_LIMIT = "12mb";
-const isMcpPath = (p: string): boolean => p === "/mcp" || p.startsWith("/mcp/");
-
-/**
- * Reconfigure body parsing so large uploads work WITHOUT widening the pre-auth
- * attack surface. Skybridge pre-applies a single global `express.json()` (~100 KB
- * default) at router-stack index 0 — before the /mcp auth middleware. We swap that
- * layer's handler, in place, so it keeps the ~100 KB limit for non-/mcp routes (e.g.
- * /status) but DEFERS /mcp bodies to a {@link JSON_BODY_LIMIT} parser mounted AFTER
- * the auth gate (see below). Net effect: an unauthenticated request can never trigger
- * a multi-MB parse, and authenticated uploads still get the raised limit.
- *
- * In-place handler swap (no stack reordering) so it can't mis-order routes. Guarded:
- * returns false if the internal layer can't be located, and the caller warns loudly.
- */
-function deferMcpBodyParsing(app: express.Express): boolean {
-  try {
-    type Layer = { handle?: express.RequestHandler & { name?: string } };
-    const router =
-      (app as unknown as { router?: { stack: Layer[] }; _router?: { stack: Layer[] } }).router ??
-      (app as unknown as { _router?: { stack: Layer[] } })._router;
-    const stack = router?.stack;
-    if (!Array.isArray(stack)) return false;
-    const layer = stack.find((l) => l?.handle?.name === "jsonParser");
-    if (!layer) return false;
-    const smallJson = express.json(); // ~100 KB default — for /status and other non-/mcp routes
-    layer.handle = (req, res, next) => (isMcpPath(req.path) ? next() : smallJson(req, res, next));
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 // Fail fast with a clear, secret-free message on any misconfiguration.
 let config;
@@ -76,8 +48,12 @@ const server = new McpServer(
 );
 
 // Defer /mcp bodies from the pre-applied ~100 KB global parser (they get the raised
-// limit post-auth, below); other routes keep the small limit.
-const bodyParsingConfigured = deferMcpBodyParsing(server.express);
+// limit post-auth, below). Also defer /upload bodies — those are read raw by
+// registerUploadRoutes' own express.raw(); letting the global JSON parser touch them
+// first silently turned a JSON-content-typed upload into an empty file (see
+// server-body-parsing.ts and routes.ts for the full story). Other routes keep the
+// small limit.
+const bodyParsingConfigured = deferBodyParsingFor(server.express, (p) => isMcpPath(p) || isUploadPath(p));
 
 // Unauthenticated health check. Use `/status`, not `/healthz`: Google Front End
 // intercepts `/healthz` on Cloud Run (it never reaches the container).
@@ -118,7 +94,29 @@ if (bodyParsingConfigured) {
   server.use("/mcp", express.json({ limit: JSON_BODY_LIMIT }));
 }
 
-registerTools(server, client, config);
+// Ticket-gated upload path: bytes go browser/curl -> server -> Lexware, never
+// through the model context. Shared store so the MCP tools can issue and read
+// tickets that these routes consume.
+//
+// NOTE: `server` (McpServer) has no get/post/use-as-router surface of its own —
+// only a `use()` for middleware. The real Express app lives at `server.express`
+// (see node_modules/skybridge/dist/server/server.d.ts: "readonly express: Express"
+// with the doc example `server.express.get(...)`), which is also what's already
+// used above for /status. A cast of `server` itself to `express.Express` would
+// type-check (via `as unknown as`) but fail at runtime — McpServer has no `get`/
+// `post` methods to call.
+export const uploadTickets = new TicketStore();
+registerUploadRoutes(server.express, uploadTickets, async ({ bytes, filename, contentType, type }) =>
+  client.postMultipart<{ id: string }>("/v1/files", { bytes, filename, contentType }, { type }),
+);
+
+registerTools(
+  server,
+  client,
+  config,
+  uploadTickets,
+  config.auth.mode === "oauth" ? config.auth.resource : `http://127.0.0.1:${config.port}`,
+);
 
 console.error(
   `[lexware-mcp] starting — ${describeCapabilities(config)} bodyLimit=${bodyParsingConfigured ? `${JSON_BODY_LIMIT} (/mcp, post-auth)` : "default(~100kb)"}`,
@@ -129,7 +127,10 @@ for (const warning of config.warnings) {
 if (!bodyParsingConfigured) {
   console.error(
     "[lexware-mcp] WARNING: could not raise the JSON body limit (Skybridge/Express internals changed) — " +
-      "uploads over ~100 KB will be rejected. upload-file/upload-voucher-file may fail until this is fixed.",
+      "uploads over ~100 KB will be rejected. upload-file/upload-voucher-file may fail until this is fixed. " +
+      "The /upload/:ticket endpoints are ALSO affected: the global ~100 KB JSON parser stays in front of " +
+      "them instead of being skipped, so a ticket-gated upload over ~100 KB fails there too (routes.ts's " +
+      "own Buffer.isBuffer guard still prevents a silent empty upload, but the request itself will 400/413).",
   );
 }
 if (config.auth.mode === "oauth" && config.auth.allowedEmailDomains.length === 0) {

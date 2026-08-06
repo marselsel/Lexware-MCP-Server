@@ -4,6 +4,45 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Upload files without pushing their bytes through the model context.** `upload-file` /
+  `upload-voucher-file` take the file as base64 inline in the JSON-RPC body, so every byte is billed as
+  tokens, sits in the conversation transcript, and a ~8 MB receipt runs into the 12 MB body limit — the
+  file has to travel through the model even though the model has no use for its contents. Three new
+  drafts-tier tools take a different route:
+  - **`create-upload-ticket`** issues a short-lived (15 min), single-use ticket and returns both a browser
+    URL for drag-and-drop and a ready-to-run `curl` command. The bytes go client → server → Lexware; the
+    model only ever sees the resulting file id.
+  - **`get-upload-result`** reads back the file id once the transfer has happened.
+  - **`upload-file-from-url`** fetches the file server-side from a URL.
+
+  **`LEXWARE_UPLOAD_ALLOWED_HOSTS`** configures which hosts `upload-file-from-url` may download from
+  (comma-separated; the host itself or any subdomain, matched on a dot boundary). It **replaces** the
+  built-in defaults rather than extending them, so a self-hosted server can stop trusting them; setting
+  it empty blocks every host and disables the tool. An empty list never means "allow everything".
+  Default unchanged: `sharepoint.com`, `onedrive.live.com`, `1drv.ms`, `graph.microsoft.com`.
+
+  The ticket store is **in-process**, so this is a single-instance feature: a restart drops open tickets
+  (they answer `410`, they do not hang), and behind a load balancer without sticky sessions an upload can
+  reach a different instance than the one that issued the ticket. The 15-minute lifetime bounds the
+  window; an external store would mean a new infrastructure dependency for what is otherwise a
+  self-contained server.
+
+  Supporting pieces: an in-memory ticket store, the `GET`/`POST /upload/:ticket` endpoints with their
+  self-contained upload page, and a URL fetcher hardened against SSRF (host allowlist, redirect
+  re-validation, and rejection of loopback/link-local/private address ranges after DNS resolution).
+  `filename` and `mimeType` travel as `X-Filename-B64` (base64url of the UTF-8 bytes) rather than raw
+  header bytes, so names containing an en dash, typographic quotes or an emoji survive — a raw header
+  value is Latin-1 on the wire and `fetch()` refuses anything above U+00FF outright.
+- **Body parsing now also defers `/upload` paths** from the pre-applied global JSON parser, alongside
+  `/mcp`. The upload routes read the raw body themselves; letting the JSON parser run first turned a
+  JSON-content-typed upload into an empty file.
+
+### Changed
+- The existing base64 upload tools are unchanged and remain available — the ticket route is additive.
+
 ## [0.1.7]
 
 ### Added
