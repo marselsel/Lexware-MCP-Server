@@ -3,7 +3,7 @@ import { mcpAuthMetadataRouter, McpServer, requireBearerAuth } from "skybridge/s
 import { bearerAuthMiddleware } from "./auth.js";
 import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { LexwareClient } from "./lexware/client.js";
-import { buildOAuthMetadata, createAccessTokenVerifier } from "./oauth.js";
+import { advertisedScopes, buildOAuthMetadata, createAccessTokenVerifier } from "./oauth.js";
 import { registerTools } from "./tools/index.js";
 
 /** Base64 file uploads (upload-file / upload-voucher-file) travel inline in the JSON-RPC body. */
@@ -93,6 +93,9 @@ if (config.auth.mode === "oauth") {
     mcpAuthMetadataRouter({
       oauthMetadata: buildOAuthMetadata(oauth),
       resourceServerUrl: new URL(oauth.resource),
+      // Undefined unless OAUTH_SCOPES_SUPPORTED is set, which keeps `scopes_supported`
+      // out of the protected-resource document exactly as before (see advertisedScopes).
+      scopesSupported: advertisedScopes(oauth),
     }),
   );
   // RFC 9728: the protected-resource metadata path is the well-known segment

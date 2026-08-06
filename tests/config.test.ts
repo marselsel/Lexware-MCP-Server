@@ -47,6 +47,7 @@ describe("loadConfig", () => {
       resource: "https://mcp.example.com",
       verifyAudience: true,
       extraAudiences: [],
+      scopesSupported: [],
       allowedEmailDomains: ["example.com", "example.org"],
       authorizationEndpoint: "https://auth.example.com/oauth2/authorize",
       tokenEndpoint: "https://auth.example.com/oauth2/token",
@@ -103,6 +104,27 @@ describe("loadConfig", () => {
       // The extra audiences are additive: the check stays on.
       verifyAudience: true,
     });
+  });
+
+  it("parses OAUTH_SCOPES_SUPPORTED into a scope list (trimmed, blanks dropped)", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+      OAUTH_SCOPES_SUPPORTED: "openid, email , api://abc/mcp.access, ",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({
+      scopesSupported: ["openid", "email", "api://abc/mcp.access"],
+    });
+  });
+
+  it("defaults OAUTH_SCOPES_SUPPORTED to an empty list (nothing advertised)", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({ scopesSupported: [] });
   });
 
   it("OAuth takes precedence over a static token", () => {

@@ -52,6 +52,14 @@ export type AuthConfig =
        * rejected. Comma-separated via OAUTH_AUDIENCE.
        */
       extraAudiences: string[];
+      /**
+       * Scopes advertised in the protected-resource metadata (RFC 9728
+       * `scopes_supported`), so a client knows what to request. Empty means "advertise
+       * nothing", which leaves the document exactly as it was before this option existed.
+       * Needed for IdPs that reject an authorization request without a `scope` parameter
+       * (Microsoft Entra: AADSTS900144). Comma-separated via OAUTH_SCOPES_SUPPORTED.
+       */
+      scopesSupported: string[];
       /** If non-empty, the user's email domain must be one of these (hard backstop). */
       allowedEmailDomains: string[];
       /** OIDC userinfo endpoint, used to fetch email when it isn't a token claim. */
@@ -186,6 +194,12 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
       .split(",")
       .map((a) => a.trim())
       .filter(Boolean);
+    // Not run through normalizeUrl: scopes are opaque strings, and IdPs use both bare
+    // names ("openid") and URI-shaped ones ("api://<client-id>/mcp.access").
+    const scopesSupported = (env.OAUTH_SCOPES_SUPPORTED ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     // Endpoints default to the WorkOS-AuthKit layout but are overridable so other
     // IdPs (Auth0: /authorize + /oauth/token; Keycloak; Clerk) advertise correctly
     // in the /.well-known/oauth-authorization-server metadata.
@@ -211,6 +225,7 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
       resource,
       verifyAudience,
       extraAudiences,
+      scopesSupported,
       allowedEmailDomains,
       userinfoUrl,
       authorizationEndpoint,

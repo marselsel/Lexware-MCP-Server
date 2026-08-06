@@ -15,6 +15,8 @@ export interface OAuthSettings {
   verifyAudience: boolean;
   /** Extra accepted `aud` values (see AuthConfig.extraAudiences). */
   extraAudiences?: string[];
+  /** Scopes to advertise in the protected-resource metadata (see AuthConfig.scopesSupported). */
+  scopesSupported?: string[];
   allowedEmailDomains: string[];
   userinfoUrl: string;
   /** Authorization endpoint advertised in AS metadata. Defaults to `${issuer}/oauth2/authorize`. */
@@ -56,6 +58,25 @@ export function buildOAuthMetadata(oauth: OAuthSettings): OAuthMetadata {
     code_challenge_methods_supported: ["S256"],
     scopes_supported: ["openid", "email", "profile"],
   };
+}
+
+/**
+ * Scopes to advertise as `scopes_supported` in the protected-resource metadata
+ * (RFC 9728), or `undefined` when none are configured.
+ *
+ * `undefined` rather than `[]` is deliberate: `mcpAuthMetadataRouter` copies the value
+ * straight into the metadata object, and `JSON.stringify` drops an undefined property —
+ * so with nothing configured the document is byte-for-byte what it was before this
+ * option existed. An empty array would instead advertise `"scopes_supported": []`,
+ * which is a different (and misleading) statement.
+ *
+ * Why advertise at all: without `scopes_supported` a client has no way to know what to
+ * ask for and may omit `scope` from the authorization request entirely, which some IdPs
+ * reject outright (Microsoft Entra: `AADSTS900144: The request body must contain the
+ * following parameter: 'scope'`).
+ */
+export function advertisedScopes(oauth: OAuthSettings): string[] | undefined {
+  return oauth.scopesSupported?.length ? oauth.scopesSupported : undefined;
 }
 
 /** Network timeout for the userinfo lookup so a hung IdP can't block a request indefinitely. */

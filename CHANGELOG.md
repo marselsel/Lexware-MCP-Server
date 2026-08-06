@@ -17,6 +17,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `OAUTH_VERIFY_AUDIENCE=false`, which accepts *any* token from the issuer (confused-deputy risk).
   `OAUTH_VERIFY_AUDIENCE` stays `true` with this option — the check is still enforced, just against a
   value the IdP actually issues. Unset by default; no change for existing deployments.
+- **`OAUTH_SCOPES_SUPPORTED`: advertise scopes in the protected-resource metadata.** Comma-separated;
+  passed through to `mcpAuthMetadataRouter` as `scopesSupported`, which publishes it as
+  `scopes_supported` (RFC 9728). The SDK has always supported the option, but the server never passed
+  it and there was no way to configure it, so the protected-resource document named no scopes at all.
+  A client that discovers the server through that document therefore has nothing to put in the
+  authorization request's `scope` parameter and may omit it — which some IdPs reject outright
+  (Microsoft Entra: `AADSTS900144: The request body must contain the following parameter: 'scope'`),
+  breaking sign-in before it starts. Unset by default: no scopes are advertised and the document is
+  unchanged, so existing deployments are unaffected.
 
 ## [0.1.7]
 
