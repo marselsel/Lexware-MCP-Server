@@ -108,6 +108,27 @@ describe("createAccessTokenVerifier", () => {
     await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } });
   });
 
+  it("accepts an extra audience (Entra puts the API's client ID in aud, not the resource)", async () => {
+    const clientId = "11111111-2222-3333-4444-555555555555";
+    const verify = createAccessTokenVerifier(settings({ extraAudiences: [clientId] }), { jwks });
+    const token = await sign({ sub: "u" }, { aud: clientId });
+    await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } });
+  });
+
+  it("still accepts the resource audience when extra audiences are configured", async () => {
+    const verify = createAccessTokenVerifier(settings({ extraAudiences: ["some-client-id"] }), { jwks });
+    const token = await sign({ sub: "u" });
+    await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } });
+  });
+
+  it("still rejects an audience that is neither the resource nor an extra one", async () => {
+    // The point of OAUTH_AUDIENCE over OAUTH_VERIFY_AUDIENCE=false: a token minted
+    // for a different app on the same tenant must not be accepted (confused deputy).
+    const verify = createAccessTokenVerifier(settings({ extraAudiences: ["our-client-id"] }), { jwks });
+    const token = await sign({ sub: "u" }, { aud: "another-app-client-id" });
+    await expect(verify(token)).rejects.toThrow();
+  });
+
   it("allows an email-claim domain that is permitted", async () => {
     const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), { jwks });
     const token = await sign({ sub: "u", email: "user@example.com", email_verified: true });

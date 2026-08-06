@@ -46,6 +46,7 @@ describe("loadConfig", () => {
       userinfoUrl: "https://auth.example.com/oauth2/userinfo",
       resource: "https://mcp.example.com",
       verifyAudience: true,
+      extraAudiences: [],
       allowedEmailDomains: ["example.com", "example.org"],
       authorizationEndpoint: "https://auth.example.com/oauth2/authorize",
       tokenEndpoint: "https://auth.example.com/oauth2/token",
@@ -87,6 +88,21 @@ describe("loadConfig", () => {
     expect(() =>
       loadConfig({ LEXWARE_API_KEY: "k", OAUTH_ISSUER: "https://auth.example.com" } as NodeJS.ProcessEnv),
     ).toThrow(/OAUTH_RESOURCE/);
+  });
+
+  it("parses OAUTH_AUDIENCE into extra accepted audiences (trimmed, blanks dropped)", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+      // Bare GUIDs, not URLs — these must not be run through normalizeUrl.
+      OAUTH_AUDIENCE: "11111111-2222-3333-4444-555555555555, api://other , ",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({
+      extraAudiences: ["11111111-2222-3333-4444-555555555555", "api://other"],
+      // The extra audiences are additive: the check stays on.
+      verifyAudience: true,
+    });
   });
 
   it("OAuth takes precedence over a static token", () => {
