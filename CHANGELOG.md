@@ -42,6 +42,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 - The existing base64 upload tools are unchanged and remain available — the ticket route is additive.
+- **`SERVER_URL` (or `OAUTH_RESOURCE`) now applies in every auth mode, not only OAuth.** It is the
+  server's public URL, and `create-upload-ticket` builds its browser link and its `curl` command from
+  it. Previously that base URL was derived from the auth mode — the OAuth resource, otherwise
+  `http://127.0.0.1:$PORT` — so a static-token deployment behind a real domain (a documented,
+  supported mode) set `SERVER_URL`, had it ignored, and handed out upload links that resolve nowhere
+  but inside the container. The value goes through the same HTTPS validation as every other
+  configured URL, so a typo fails at startup instead of surfacing in a command an operator runs.
+  Unset, the loopback fallback still applies, now on the configured `PORT`. Nothing changes for
+  OAuth deployments.
+
+### Fixed
+- **The upload page no longer builds its success message as an HTML string.** The Lexware file id
+  came back from the API and was interpolated into `innerHTML`; it is now a text node inside a
+  `<code>` element, so it still renders as code but can never be parsed as markup. The error path
+  already did this.
+- **Filenames from `Content-Disposition` are stripped of control characters and length-capped.**
+  Sanitizing only removed path separators and trimmed the ends, so
+  `filename*=UTF-8''evil%0D%0Ainjected.pdf` arrived as `evil\r\ninjected.pdf` — CRLF intact, because
+  it sits in the middle — and went on into the multipart field and into anything that logs the name.
+  C0 controls and DEL are now removed wherever they appear, and the result is capped at 255
+  characters (the per-component limit of every common filesystem) without splitting a surrogate pair.
+  A name left empty by this yields the existing fallback chain instead. Legitimate non-ASCII names
+  (umlauts, en dash, emoji) are untouched.
+- **Expired upload tickets are dropped as soon as they are seen**, in `claim()` and `peek()`, not only
+  by the sweep that runs on the next `create()`. An instance that issued tickets and then went quiet
+  used to hold the expired entries for as long as it stayed up. Externally nothing changes: still
+  `410`, still `undefined`.
 
 ## [0.1.7]
 

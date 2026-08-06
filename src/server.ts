@@ -110,13 +110,10 @@ registerUploadRoutes(server.express, uploadTickets, async ({ bytes, filename, co
   client.postMultipart<{ id: string }>("/v1/files", { bytes, filename, contentType }, { type }),
 );
 
-registerTools(
-  server,
-  client,
-  config,
-  uploadTickets,
-  config.auth.mode === "oauth" ? config.auth.resource : `http://127.0.0.1:${config.port}`,
-);
+// publicBaseUrl is resolved in config.ts from OAUTH_RESOURCE/SERVER_URL, independently
+// of the auth mode — deriving it here from `config.auth` handed a static-token
+// deployment behind a real domain upload links pointing at its own loopback.
+registerTools(server, client, config, uploadTickets, config.publicBaseUrl);
 
 console.error(
   `[lexware-mcp] starting — ${describeCapabilities(config)} bodyLimit=${bodyParsingConfigured ? `${JSON_BODY_LIMIT} (/mcp, post-auth)` : "default(~100kb)"}`,

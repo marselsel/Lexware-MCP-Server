@@ -94,7 +94,7 @@ LEXWARE_API_KEY=... MCP_AUTH_TOKEN=... npm start
 |---|---|---|
 | `LEXWARE_API_KEY` | — (**required**) | Your Lexware API key ([create one](https://app.lexware.de/addons/public-api)) |
 | `OAUTH_ISSUER` | — | OAuth authorization-server issuer URL. Setting it enables OAuth mode¹ |
-| `OAUTH_RESOURCE` / `SERVER_URL` | — | This server's public URL (token audience / Resource Indicator). Required in OAuth mode |
+| `OAUTH_RESOURCE` / `SERVER_URL` | `http://127.0.0.1:$PORT` | This server's public URL. **Required in OAuth mode** (token audience / Resource Indicator), and used in *every* mode to build the upload links `create-upload-ticket` hands out (browser URL and `curl` command). Set it whenever the server is reachable under a real domain — without it those links point at the loopback fallback, which only works on the server itself |
 | `OAUTH_ALLOWED_EMAIL_DOMAINS` | — | Comma-separated allow-list of email domains (e.g. `example.com`) |
 | `OAUTH_VERIFY_AUDIENCE` | `true` | Verify the token `aud` matches `OAUTH_RESOURCE`. **Keep `true`.** Setting `false` accepts *any* valid token from the issuer — including one minted for a different app on the same issuer (a confused-deputy risk). Only disable for a dedicated, single-audience issuer that has no Resource Indicator |
 | `OAUTH_JWKS_URL` / `OAUTH_USERINFO_URL` | derived from issuer | Override the JWKS / OIDC userinfo endpoints (defaults use the WorkOS-AuthKit layout) |

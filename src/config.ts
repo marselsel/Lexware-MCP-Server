@@ -66,6 +66,17 @@ export interface Config {
   lexwareAppBaseUrl: string;
   auth: AuthConfig;
   /**
+   * This server's public base URL, used to build the `/upload/:ticket` links that
+   * `create-upload-ticket` hands to a browser and bakes into its curl command.
+   *
+   * Deliberately NOT part of {@link AuthConfig}: where this server is reachable is a
+   * deployment fact, not an auth one. Deriving it from the auth mode — OAuth resource
+   * or else loopback — meant a static-token deployment behind a real domain (a
+   * supported mode, see README) handed out `http://127.0.0.1:8080/upload/…`, a link
+   * that resolves nowhere but inside the container.
+   */
+  publicBaseUrl: string;
+  /**
    * Hosts `upload-file-from-url` may download from (the host itself or any subdomain).
    * Defaults to {@link DEFAULT_ALLOWED_HOSTS}; `LEXWARE_UPLOAD_ALLOWED_HOSTS` REPLACES
    * that list rather than extending it, so the defaults can be opted out of. An empty
@@ -171,6 +182,28 @@ function validateIssuerUrl(raw: string): string {
   return value;
 }
 
+/**
+ * Resolve this server's public base URL — in EVERY auth mode, not just OAuth.
+ *
+ * `OAUTH_RESOURCE` first, so an OAuth deployment can never drift from the value its
+ * token audience is built from; then `SERVER_URL`, which the README already documents
+ * as "this server's public URL" and which was previously read only inside the OAuth
+ * branch (a static-token or unauthenticated deployment set it and it was ignored).
+ * Only with neither set does the loopback fallback apply: correct for a local run,
+ * and honest about being unusable anywhere else.
+ *
+ * Validated through {@link normalizeUrl} like every other configured URL, so a typo
+ * or a plain-http public URL fails at startup rather than being pasted into a curl
+ * command an operator then runs.
+ */
+function resolvePublicBaseUrl(env: NodeJS.ProcessEnv, port: number): string {
+  const resource = env.OAUTH_RESOURCE?.trim();
+  if (resource) return normalizeUrl(resource, resource, "OAUTH_RESOURCE");
+  const serverUrl = env.SERVER_URL?.trim();
+  if (serverUrl) return normalizeUrl(serverUrl, serverUrl, "SERVER_URL");
+  return `http://127.0.0.1:${port}`;
+}
+
 /** Resolve how `/mcp` is authenticated, failing closed if nothing is configured. */
 function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
   const issuerRaw = env.OAUTH_ISSUER?.trim();
@@ -268,6 +301,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   const auth = resolveAuth(env);
+  const port = parsePort(env.PORT);
 
   const readOnly = parseBool(env.LEXWARE_READ_ONLY, false);
   // READ_ONLY is a hard override: it wins over the individual enable flags.
@@ -295,8 +329,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "LEXWARE_APP_BASE_URL",
     ),
     auth,
+    publicBaseUrl: resolvePublicBaseUrl(env, port),
     uploadAllowedHosts: resolveUploadAllowedHosts(env.LEXWARE_UPLOAD_ALLOWED_HOSTS),
-    port: parsePort(env.PORT),
+    port,
     debugLogging: parseBool(env.LEXWARE_DEBUG_LOGGING, false),
     capabilities: { read: true, drafts: enableDrafts, finalize: enableFinalize },
     warnings,
