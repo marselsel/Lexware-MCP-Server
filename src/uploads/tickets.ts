@@ -71,6 +71,11 @@ export class TicketStore {
   claim(ticket: string): TicketState {
     const state = this.tickets.get(ticket);
     if (!state || state.expiresAt <= this.now()) {
+      // Drop it the moment it is seen to be expired, instead of leaving it for the
+      // next create(): sweep() runs only there, so an instance that issues tickets
+      // and then goes quiet would hold every expired entry for as long as it lives.
+      // Answer is unchanged either way — 410.
+      if (state) this.tickets.delete(ticket);
       throw new TicketError("Upload ticket is unknown or expired. Create a new one.", 410);
     }
     if (state.result || state.inFlight) {
@@ -102,13 +107,22 @@ export class TicketStore {
     }
   }
 
-  /** Read-only lookup that keeps working after the ticket was consumed. */
+  /**
+   * Lookup that keeps working after the ticket was consumed. Not entirely read-only:
+   * like claim(), it evicts an entry it finds expired (same reason). Return value is
+   * unchanged — `undefined`.
+   */
   peek(ticket: string): TicketState | undefined {
     const state = this.tickets.get(ticket);
-    if (!state || state.expiresAt <= this.now()) return undefined;
+    if (!state) return undefined;
+    if (state.expiresAt <= this.now()) {
+      this.tickets.delete(ticket);
+      return undefined;
+    }
     return state;
   }
 
+  /** Bulk cleanup on create(); claim() and peek() additionally evict what they touch. */
   private sweep(): void {
     const t = this.now();
     for (const [key, state] of this.tickets) {

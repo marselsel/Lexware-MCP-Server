@@ -250,6 +250,52 @@ describe("loadConfig", () => {
     expect(isAllowedHost("files.example.com", c.uploadAllowedHosts)).toBe(false);
   });
 
+  it("resolves the public base URL from SERVER_URL in EVERY auth mode, not just OAuth", () => {
+    // The bug this pins down: publicBaseUrl used to be derived from the auth mode —
+    // the OAuth resource, else loopback — so a static-token (or unauthenticated)
+    // deployment behind a real domain set SERVER_URL, had it ignored, and handed out
+    // upload links pointing at its own container.
+    const staticMode = loadConfig({ ...base(), SERVER_URL: "https://mcp.example.com/lexware" } as NodeJS.ProcessEnv);
+    expect(staticMode.auth.mode).toBe("static");
+    expect(staticMode.publicBaseUrl).toBe("https://mcp.example.com/lexware");
+
+    const noAuth = loadConfig({
+      LEXWARE_API_KEY: "k",
+      MCP_ALLOW_UNAUTHENTICATED: "true",
+      SERVER_URL: "https://mcp.example.com",
+    } as NodeJS.ProcessEnv);
+    expect(noAuth.auth.mode).toBe("none");
+    expect(noAuth.publicBaseUrl).toBe("https://mcp.example.com");
+  });
+
+  it("prefers OAUTH_RESOURCE over SERVER_URL and matches the OAuth resource exactly", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      OAUTH_RESOURCE: "https://mcp.example.com/",
+      SERVER_URL: "https://other.example.com",
+    } as NodeJS.ProcessEnv);
+    // Normalized the same way (trailing slash stripped) and never drifting from the
+    // value the token audience is checked against.
+    expect(c.publicBaseUrl).toBe("https://mcp.example.com");
+    expect(c.publicBaseUrl).toBe((c.auth as { resource: string }).resource);
+  });
+
+  it("falls back to loopback on the CONFIGURED port when no public URL is set", () => {
+    expect(loadConfig(base()).publicBaseUrl).toBe("http://127.0.0.1:8080");
+    expect(loadConfig({ ...base(), PORT: "9443" } as NodeJS.ProcessEnv).publicBaseUrl).toBe("http://127.0.0.1:9443");
+  });
+
+  it("validates SERVER_URL like every other configured URL", () => {
+    // A typo must fail at startup, not end up in a curl command an operator runs.
+    expect(() => loadConfig({ ...base(), SERVER_URL: "not a url" } as NodeJS.ProcessEnv)).toThrow(ConfigError);
+    expect(() => loadConfig({ ...base(), SERVER_URL: "http://mcp.example.com" } as NodeJS.ProcessEnv)).toThrow(/https/);
+    // http on loopback stays allowed (local runs).
+    expect(loadConfig({ ...base(), SERVER_URL: "http://localhost:8080" } as NodeJS.ProcessEnv).publicBaseUrl).toBe(
+      "http://localhost:8080",
+    );
+  });
+
   it("rejects an invalid PORT", () => {
     expect(() => loadConfig({ ...base(), PORT: "0" } as NodeJS.ProcessEnv)).toThrow(ConfigError);
     expect(() => loadConfig({ ...base(), PORT: "nope" } as NodeJS.ProcessEnv)).toThrow(ConfigError);

@@ -879,6 +879,18 @@ describe("X-Filename-B64", () => {
     expect(decodeFilenameB64(Buffer.from("a\u0001b.pdf", "utf8").toString("base64url"))).toBeUndefined();
   });
 
+  it("the served page never assigns innerHTML — the file id is built as a text node", () => {
+    // body.fileId is whatever the Lexware API returned; interpolating it into
+    // innerHTML made a value from a foreign API the source of this page's markup.
+    // The <code> styling is kept, the parsing is not.
+    const html = uploadPageHtml("abc123");
+    expect(html).not.toContain("innerHTML");
+    expect(html).toContain('document.createElement("code")');
+    expect(html).toContain("id.textContent = ");
+    // No hand-built markup around the id anywhere on the success path either.
+    expect(html).not.toContain("<code>\" + body.fileId");
+  });
+
   it("the served page sends the encoded header and never the raw filename", () => {
     const html = uploadPageHtml("abc123");
     expect(html).toContain("X-Filename-B64");

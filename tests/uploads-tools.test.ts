@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
 import { buildCurlCommand, buildTicketResponse } from "../src/tools/uploads.js";
 
 const URL_ = "https://mcp.example.com/lexware/upload/abc123";
@@ -48,6 +49,33 @@ describe("buildTicketResponse", () => {
     const b64 = headerValue(out.curlCommand, "X-Filename-B64");
     expect(b64).toBeDefined();
     expect(Buffer.from(b64 as string, "base64url").toString("utf8")).toBe("Rechnung Müller.pdf");
+  });
+});
+
+// --- The URL the operator is actually handed ------------------------------------
+
+describe("the public base URL reaching the issued ticket", () => {
+  const ticket = { ticket: "abc123", type: "voucher", expiresAt: 0 } as const;
+  const staticEnv = (extra: Record<string, string>) =>
+    ({ LEXWARE_API_KEY: "k", MCP_AUTH_TOKEN: "a".repeat(40), ...extra }) as NodeJS.ProcessEnv;
+
+  it("uses SERVER_URL in static-token mode — both links, not just one of them", () => {
+    // The whole failure was invisible in the config: SERVER_URL was read only in the
+    // OAuth branch, so this deployment served a browser URL and a curl command that
+    // pointed at the container's own loopback interface.
+    const config = loadConfig(staticEnv({ SERVER_URL: "https://mcp.example.com/lexware" }));
+    const out = buildTicketResponse(ticket, config.publicBaseUrl);
+    expect(out.uploadUrl).toBe("https://mcp.example.com/lexware/upload/abc123");
+    expect(out.curlCommand).toContain("https://mcp.example.com/lexware/upload/abc123");
+    expect(out.uploadUrl).not.toContain("127.0.0.1");
+    expect(out.curlCommand).not.toContain("127.0.0.1");
+  });
+
+  it("falls back to loopback on the CONFIGURED port when no public URL is set", () => {
+    const config = loadConfig(staticEnv({ PORT: "9443" }));
+    const out = buildTicketResponse(ticket, config.publicBaseUrl);
+    expect(out.uploadUrl).toBe("http://127.0.0.1:9443/upload/abc123");
+    expect(out.curlCommand).toContain("http://127.0.0.1:9443/upload/abc123");
   });
 });
 
