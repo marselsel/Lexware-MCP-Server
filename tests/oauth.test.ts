@@ -1,6 +1,12 @@
+import { mcpAuthMetadataRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
+import express from "express";
 import * as jose from "jose";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  advertisedScopes,
+  buildOAuthMetadata,
   createAccessTokenVerifier,
   isEmailDomainAllowed,
   isEmailVerified,
@@ -205,5 +211,77 @@ describe("createAccessTokenVerifier", () => {
     });
     const token = await sign({ sub: "u" });
     await expect(verify(token)).rejects.toThrow(/domain is not permitted/);
+  });
+});
+
+describe("advertisedScopes", () => {
+  it("is undefined when no scopes are configured", () => {
+    expect(advertisedScopes(settings())).toBeUndefined();
+    expect(advertisedScopes(settings({ scopesSupported: [] }))).toBeUndefined();
+  });
+
+  it("returns the configured scopes", () => {
+    expect(advertisedScopes(settings({ scopesSupported: ["openid", "email"] }))).toEqual([
+      "openid",
+      "email",
+    ]);
+  });
+});
+
+/** Serve the protected-resource metadata the way server.ts mounts it, and read it back. */
+async function protectedResourceDoc(oauth: OAuthSettings): Promise<Record<string, unknown>> {
+  const app = express();
+  app.use(
+    mcpAuthMetadataRouter({
+      oauthMetadata: buildOAuthMetadata(oauth),
+      resourceServerUrl: new URL(oauth.resource),
+      scopesSupported: advertisedScopes(oauth),
+    }),
+  );
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as AddressInfo;
+    const res = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource`);
+    return (await res.json()) as Record<string, unknown>;
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+describe("protected-resource metadata (RFC 9728)", () => {
+  it("omits scopes_supported entirely when nothing is configured", async () => {
+    const doc = await protectedResourceDoc(settings());
+    // Not just falsy — the key must be absent, i.e. the document is unchanged from
+    // before OAUTH_SCOPES_SUPPORTED existed.
+    expect(Object.keys(doc)).not.toContain("scopes_supported");
+    expect(doc).toMatchObject({
+      resource: "https://mcp.example.com/",
+      authorization_servers: [ISSUER],
+    });
+  });
+
+  it("advertises the configured scopes so clients know what to request", async () => {
+    const doc = await protectedResourceDoc(settings({ scopesSupported: ["openid", "email", "api://x/mcp.access"] }));
+    expect(doc.scopes_supported).toEqual(["openid", "email", "api://x/mcp.access"]);
+  });
+});
+
+describe("buildOAuthMetadata scopes_supported", () => {
+  it("keeps the historic default when OAUTH_SCOPES_SUPPORTED is unset", () => {
+    expect(buildOAuthMetadata(settings()).scopes_supported).toEqual(["openid", "email", "profile"]);
+    expect(buildOAuthMetadata(settings({ scopesSupported: [] })).scopes_supported).toEqual([
+      "openid",
+      "email",
+      "profile",
+    ]);
+  });
+
+  it("uses the configured scopes so the AS and protected-resource docs cannot contradict", () => {
+    const oauth = settings({ scopesSupported: ["api://x/mcp.access"] });
+    // Both documents must name the same scopes; an operator on a non-WorkOS IdP would
+    // otherwise still see `openid email profile` advertised in the AS metadata.
+    expect(buildOAuthMetadata(oauth).scopes_supported).toEqual(["api://x/mcp.access"]);
+    expect(advertisedScopes(oauth)).toEqual(["api://x/mcp.access"]);
   });
 });

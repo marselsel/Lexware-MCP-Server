@@ -15,6 +15,8 @@ export interface OAuthSettings {
   verifyAudience: boolean;
   /** Extra accepted `aud` values (see AuthConfig.extraAudiences). */
   extraAudiences?: string[];
+  /** Scopes to advertise in the protected-resource metadata (see AuthConfig.scopesSupported). */
+  scopesSupported?: string[];
   allowedEmailDomains: string[];
   userinfoUrl: string;
   /** Authorization endpoint advertised in AS metadata. Defaults to `${issuer}/oauth2/authorize`. */
@@ -38,6 +40,12 @@ export function isEmailDomainAllowed(email: string | undefined, allowed: string[
 }
 
 /**
+ * Scopes advertised when `OAUTH_SCOPES_SUPPORTED` is unset. Historic default, kept so
+ * an existing deployment's authorization-server metadata is unchanged.
+ */
+const DEFAULT_ADVERTISED_SCOPES = ["openid", "email", "profile"];
+
+/**
  * Authorization-server metadata advertised at `/.well-known/oauth-authorization-server`
  * (a convenience proxy; modern clients discover the AS via the protected-resource doc).
  */
@@ -54,8 +62,31 @@ export function buildOAuthMetadata(oauth: OAuthSettings): OAuthMetadata {
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
-    scopes_supported: ["openid", "email", "profile"],
+    // Same source as the protected-resource document, so the two can't contradict each
+    // other: an operator who sets OAUTH_SCOPES_SUPPORTED for a non-WorkOS IdP would
+    // otherwise still see `openid email profile` advertised here. Falls back to the
+    // historic default when unset, leaving existing deployments unchanged.
+    scopes_supported: advertisedScopes(oauth) ?? DEFAULT_ADVERTISED_SCOPES,
   };
+}
+
+/**
+ * Scopes to advertise as `scopes_supported` in the protected-resource metadata
+ * (RFC 9728), or `undefined` when none are configured.
+ *
+ * `undefined` rather than `[]` is deliberate: `mcpAuthMetadataRouter` copies the value
+ * straight into the metadata object, and `JSON.stringify` drops an undefined property —
+ * so with nothing configured the document is byte-for-byte what it was before this
+ * option existed. An empty array would instead advertise `"scopes_supported": []`,
+ * which is a different (and misleading) statement.
+ *
+ * Why advertise at all: without `scopes_supported` a client has no way to know what to
+ * ask for and may omit `scope` from the authorization request entirely, which some IdPs
+ * reject outright (Microsoft Entra: `AADSTS900144: The request body must contain the
+ * following parameter: 'scope'`).
+ */
+export function advertisedScopes(oauth: OAuthSettings): string[] | undefined {
+  return oauth.scopesSupported?.length ? oauth.scopesSupported : undefined;
 }
 
 /** Network timeout for the userinfo lookup so a hung IdP can't block a request indefinitely. */

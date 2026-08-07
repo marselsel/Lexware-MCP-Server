@@ -17,6 +17,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `OAUTH_VERIFY_AUDIENCE=false`, which accepts *any* token from the issuer (confused-deputy risk).
   `OAUTH_VERIFY_AUDIENCE` stays `true` with this option — the check is still enforced, just against a
   value the IdP actually issues. Unset by default; no change for existing deployments.
+- **`OAUTH_SCOPES_SUPPORTED`: advertise scopes in the protected-resource metadata.** Comma-separated;
+  passed through to `mcpAuthMetadataRouter` as `scopesSupported`, which publishes it as
+  `scopes_supported` (RFC 9728). The SDK has always supported the option, but the server never passed
+  it and there was no way to configure it, so the protected-resource document named no scopes at all.
+  A client that discovers the server through that document therefore has nothing to put in the
+  authorization request's `scope` parameter and may omit it — which some IdPs reject outright
+  (Microsoft Entra: `AADSTS900144: The request body must contain the following parameter: 'scope'`),
+  breaking sign-in before it starts. Unset by default: no scopes are advertised and the document is
+  unchanged, so existing deployments are unaffected.
+
+  The value drives **both** well-known documents. `buildOAuthMetadata` previously hardcoded
+  `scopes_supported: ["openid","email","profile"]` on the authorization-server document, so
+  configuring scopes for a non-WorkOS IdP would have left the two documents contradicting each other
+  — the protected-resource doc naming (say) `api://<id>/mcp.access` while the authorization-server doc
+  still claimed `openid email profile`. When `OAUTH_SCOPES_SUPPORTED` is unset the authorization-server
+  document keeps that historic default, so existing deployments see no change.
+
+  Scopes may be separated by commas **or** whitespace. A scope value can never contain a space
+  (RFC 6749 §3.3), so `OAUTH_SCOPES_SUPPORTED="openid email profile"` — the form scopes take
+  everywhere else in OAuth — is unambiguous, and previously became a single invalid scope.
 
 ## [0.1.7]
 

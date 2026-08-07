@@ -47,6 +47,7 @@ describe("loadConfig", () => {
       resource: "https://mcp.example.com",
       verifyAudience: true,
       extraAudiences: [],
+      scopesSupported: [],
       allowedEmailDomains: ["example.com", "example.org"],
       authorizationEndpoint: "https://auth.example.com/oauth2/authorize",
       tokenEndpoint: "https://auth.example.com/oauth2/token",
@@ -103,6 +104,49 @@ describe("loadConfig", () => {
       // The extra audiences are additive: the check stays on.
       verifyAudience: true,
     });
+  });
+
+  it("parses OAUTH_SCOPES_SUPPORTED into a scope list (trimmed, blanks dropped)", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+      OAUTH_SCOPES_SUPPORTED: "openid, email , api://abc/mcp.access, ",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({
+      scopesSupported: ["openid", "email", "api://abc/mcp.access"],
+    });
+  });
+
+  it("accepts space-separated scopes (the form scopes appear in everywhere else in OAuth)", () => {
+    // A scope value can never contain a space (RFC 6749 3.3), so "openid email" must
+    // parse as two scopes, not one bogus scope named "openid email".
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+      OAUTH_SCOPES_SUPPORTED: "openid email profile",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({ scopesSupported: ["openid", "email", "profile"] });
+  });
+
+  it("accepts commas and whitespace mixed, including newlines", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+      OAUTH_SCOPES_SUPPORTED: "openid,\n  email   profile,,",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({ scopesSupported: ["openid", "email", "profile"] });
+  });
+
+  it("defaults OAUTH_SCOPES_SUPPORTED to an empty list (nothing advertised)", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({ scopesSupported: [] });
   });
 
   it("OAuth takes precedence over a static token", () => {
