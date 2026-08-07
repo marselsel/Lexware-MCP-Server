@@ -1,6 +1,6 @@
 {
   "name": "lexware-mcp",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": false,
   "license": "MIT",
   "description": "Open-source, self-hostable MCP server for the Lexware Office API",

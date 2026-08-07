@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9]
+
+Dependency maintenance only — no functional or behavioural change to the server.
+
+### Changed
+- **Dependencies bumped** ([#35]): TypeScript `^6.0.2` → `^7.0.2`, `skybridge` `^1.2.4` → `^1.3.3`,
+  `@skybridge/devtools` `^1.0.0` → `^1.3.3`, `vite` `^8.1.3` → `^8.2.0`, `jose` `^6.2.3` → `^6.2.8`,
+  plus `tsx`, `@types/node` and `vitest` patches. `npm audit` now reports **0 vulnerabilities**: the
+  remaining low-severity `esbuild` advisory was reached through `skybridge` and is cleared by 1.3.3.
+- **CI**: `actions/setup-node` `v6` → `v7` ([#30]).
+
+Two upgrades here carry non-obvious risk and were verified explicitly rather than assumed. TypeScript 7
+is a major bump, and compiles the 0.1.8 OAuth additions without error. More importantly, `skybridge`
+1.3.3 could have broken `deferMcpBodyParsing`, which locates a layer named `jsonParser` inside
+Express's private router stack in order to raise the `/mcp` body limit — a failure there is *silent*,
+guarded by a fallback that only surfaces as a startup warning, and no test would catch it. Confirmed
+intact both by the startup line (`bodyLimit=12mb (/mcp, post-auth)`) and functionally: a 488 KB
+authenticated `POST /mcp` returns 200, while the same body unauthenticated returns 401 — rejected
+before it is ever parsed.
+
+[#30]: https://github.com/marselsel/lexware-mcp/pull/30
+[#35]: https://github.com/marselsel/lexware-mcp/pull/35
+
 ## [0.1.8]
 
 Interoperability with IdPs that do not honour the OAuth Resource Indicator (Microsoft Entra in
