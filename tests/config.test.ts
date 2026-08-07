@@ -149,6 +149,39 @@ describe("loadConfig", () => {
     expect(c.auth).toMatchObject({ scopesSupported: [] });
   });
 
+  it("OAUTH_REGISTRATION_ENDPOINT=none omits the endpoint (issuer has no DCR)", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+      OAUTH_REGISTRATION_ENDPOINT: "none",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({ registrationEndpoint: undefined });
+  });
+
+  it("accepts NONE/None case-insensitively", () => {
+    for (const v of ["NONE", "None", " none "]) {
+      const c = loadConfig({
+        LEXWARE_API_KEY: "k",
+        OAUTH_ISSUER: "https://auth.example.com",
+        SERVER_URL: "https://mcp.example.com",
+        OAUTH_REGISTRATION_ENDPOINT: v,
+      } as NodeJS.ProcessEnv);
+      expect((c.auth as { registrationEndpoint?: string }).registrationEndpoint).toBeUndefined();
+    }
+  });
+
+  it("still derives the registration endpoint by default (unchanged behaviour)", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({
+      registrationEndpoint: "https://auth.example.com/oauth2/register",
+    });
+  });
+
   it("OAuth takes precedence over a static token", () => {
     const c = loadConfig({ ...base(), OAUTH_ISSUER: "https://auth.example.com", SERVER_URL: "https://x.example.com" } as NodeJS.ProcessEnv);
     expect(c.auth.mode).toBe("oauth");
