@@ -13,6 +13,8 @@ export interface OAuthSettings {
   jwksUrl: string;
   resource: string;
   verifyAudience: boolean;
+  /** Extra accepted `aud` values (see AuthConfig.extraAudiences). */
+  extraAudiences?: string[];
   allowedEmailDomains: string[];
   userinfoUrl: string;
   /** Authorization endpoint advertised in AS metadata. Defaults to `${issuer}/oauth2/authorize`. */
@@ -116,9 +118,13 @@ export function createAccessTokenVerifier(oauth: OAuthSettings, deps: VerifierDe
   // Accept the audience with or without a trailing slash: the advertised
   // Resource Indicator (`new URL(resource)`) serializes a bare origin with a
   // trailing slash, but `resource` is stored normalized without one.
-  const audiences = oauth.resource.endsWith("/")
-    ? [oauth.resource, oauth.resource.slice(0, -1)]
-    : [oauth.resource, `${oauth.resource}/`];
+  const audiences = [
+    ...(oauth.resource.endsWith("/")
+      ? [oauth.resource, oauth.resource.slice(0, -1)]
+      : [oauth.resource, `${oauth.resource}/`]),
+    // Entra puts the API's client ID (GUID) in `aud`, never the Application ID URI.
+    ...(oauth.extraAudiences ?? []),
+  ];
 
   return async function verifyAccessToken(token: string): Promise<AuthInfo> {
     let payload: jose.JWTPayload;

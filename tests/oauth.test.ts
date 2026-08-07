@@ -108,6 +108,37 @@ describe("createAccessTokenVerifier", () => {
     await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } });
   });
 
+  it("accepts an extra audience (Entra puts the API's client ID in aud, not the resource)", async () => {
+    const clientId = "11111111-2222-3333-4444-555555555555";
+    const verify = createAccessTokenVerifier(settings({ extraAudiences: [clientId] }), { jwks });
+    const token = await sign({ sub: "u" }, { aud: clientId });
+    await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } });
+  });
+
+  it("still accepts the resource audience when extra audiences are configured", async () => {
+    const verify = createAccessTokenVerifier(settings({ extraAudiences: ["some-client-id"] }), { jwks });
+    const token = await sign({ sub: "u" });
+    await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } });
+  });
+
+  it("still rejects an audience that is neither the resource nor an extra one", async () => {
+    // The point of OAUTH_AUDIENCE over OAUTH_VERIFY_AUDIENCE=false: a token minted
+    // for a different app on the same tenant must not be accepted (confused deputy).
+    const token = await sign({ sub: "u" }, { aud: "another-app-client-id" });
+
+    const verify = createAccessTokenVerifier(settings({ extraAudiences: ["our-client-id"] }), { jwks });
+    await expect(verify(token)).rejects.toThrow(/Invalid or expired access token/);
+
+    // Positive control: the same token, same signature, same issuer, is accepted once
+    // its audience is configured. That is what pins the rejection above to the audience
+    // check rather than to an unrelated verification failure.
+    const permissive = createAccessTokenVerifier(
+      settings({ extraAudiences: ["another-app-client-id"] }),
+      { jwks },
+    );
+    await expect(permissive(token)).resolves.toMatchObject({ extra: { sub: "u" } });
+  });
+
   it("allows an email-claim domain that is permitted", async () => {
     const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), { jwks });
     const token = await sign({ sub: "u", email: "user@example.com", email_verified: true });

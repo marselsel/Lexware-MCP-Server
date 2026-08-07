@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`OAUTH_AUDIENCE`: accept additional `aud` values.** Comma-separated, additive to the audience
+  derived from `OAUTH_RESOURCE`. Some IdPs ignore the Resource Indicator and mint a token whose `aud`
+  is not the resource URL at all — Microsoft Entra always puts the API's client ID (a GUID) in the `aud`
+  of a v2.0 access token, never the Application ID URI. Previously the expected audience was derived
+  from `OAUTH_RESOURCE` alone, and `OAUTH_RESOURCE` is forced through a URL/HTTPS validation, so a bare
+  GUID could not be expressed at all: the audience check could never match and every token was rejected
+  with 401 even though sign-in, scope and assignment were correct. The only escape was
+  `OAUTH_VERIFY_AUDIENCE=false`, which accepts *any* token from the issuer (confused-deputy risk).
+  `OAUTH_VERIFY_AUDIENCE` stays `true` with this option — the check is still enforced, just against a
+  value the IdP actually issues. Unset by default; no change for existing deployments.
+
 ## [0.1.7]
 
 ### Added

@@ -42,6 +42,16 @@ export type AuthConfig =
       resource: string;
       /** Verify the token `aud` matches `resource`. Disable if the provider has no Resource Indicator configured. */
       verifyAudience: boolean;
+      /**
+       * Additional accepted `aud` values, beyond the ones derived from `resource`.
+       * Needed for IdPs that do not honour the Resource Indicator: Microsoft Entra
+       * always puts the API's client ID (a GUID) in `aud` of a v2.0 token, never the
+       * Application ID URI. Without this the audience check can never match, and every
+       * token is rejected with 401. Keeps `verifyAudience` on — the GUID is unique to
+       * this app, so a token minted for a different app on the same tenant is still
+       * rejected. Comma-separated via OAUTH_AUDIENCE.
+       */
+      extraAudiences: string[];
       /** If non-empty, the user's email domain must be one of these (hard backstop). */
       allowedEmailDomains: string[];
       /** OIDC userinfo endpoint, used to fetch email when it isn't a token claim. */
@@ -171,6 +181,11 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
     );
     const jwksUrl = normalizeUrl(env.OAUTH_JWKS_URL, `${issuerBase}/oauth2/jwks`, "OAUTH_JWKS_URL");
     const verifyAudience = parseBool(env.OAUTH_VERIFY_AUDIENCE, true);
+    // Not run through normalizeUrl: Entra audiences are bare GUIDs, not URLs.
+    const extraAudiences = (env.OAUTH_AUDIENCE ?? "")
+      .split(",")
+      .map((a) => a.trim())
+      .filter(Boolean);
     // Endpoints default to the WorkOS-AuthKit layout but are overridable so other
     // IdPs (Auth0: /authorize + /oauth/token; Keycloak; Clerk) advertise correctly
     // in the /.well-known/oauth-authorization-server metadata.
@@ -195,6 +210,7 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
       jwksUrl,
       resource,
       verifyAudience,
+      extraAudiences,
       allowedEmailDomains,
       userinfoUrl,
       authorizationEndpoint,
