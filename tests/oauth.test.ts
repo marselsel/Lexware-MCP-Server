@@ -7,6 +7,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   advertisedScopes,
   buildOAuthMetadata,
+  discoverAuthorizationServerMetadata,
+  discoveryUrls,
   createAccessTokenVerifier,
   isEmailDomainAllowed,
   isEmailVerified,
@@ -325,5 +327,132 @@ describe("served authorization-server document", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+const jsonFetch = (byUrl: Record<string, unknown>): typeof fetch =>
+  (async (url: string | URL) => {
+    const body = byUrl[String(url)];
+    if (body === undefined) return new Response("not found", { status: 404 });
+    return new Response(JSON.stringify(body), {
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+
+describe("discoveryUrls", () => {
+  it("puts the RFC 8414 layout first for a path-less issuer", () => {
+    expect(discoveryUrls("https://auth.example.com")[0]).toBe(
+      "https://auth.example.com/.well-known/oauth-authorization-server",
+    );
+  });
+
+  it("handles a path-bearing issuer both ways (Entra-style)", () => {
+    const urls = discoveryUrls("https://login.microsoftonline.com/tid/v2.0");
+    // RFC 8414 inserts the well-known segment BEFORE the path; OIDC appends it.
+    expect(urls).toContain(
+      "https://login.microsoftonline.com/.well-known/oauth-authorization-server/tid/v2.0",
+    );
+    expect(urls).toContain(
+      "https://login.microsoftonline.com/tid/v2.0/.well-known/openid-configuration",
+    );
+  });
+});
+
+describe("discoverAuthorizationServerMetadata", () => {
+  it("returns the issuer's document", async () => {
+    const doc = { issuer: ISSUER, authorization_endpoint: `${ISSUER}/real/authorize` };
+    const got = await discoverAuthorizationServerMetadata(ISSUER, {
+      fetchFn: jsonFetch({ [`${ISSUER}/.well-known/oauth-authorization-server`]: doc }),
+    });
+    expect(got?.authorization_endpoint).toBe(`${ISSUER}/real/authorize`);
+  });
+
+  it("falls through to the OIDC layout when RFC 8414 404s", async () => {
+    const iss = "https://login.microsoftonline.com/tid/v2.0";
+    const doc = { issuer: iss, token_endpoint: "https://login.microsoftonline.com/tid/oauth2/v2.0/token" };
+    const got = await discoverAuthorizationServerMetadata(iss, {
+      fetchFn: jsonFetch({ [`${iss}/.well-known/openid-configuration`]: doc }),
+    });
+    expect(got?.token_endpoint).toBe("https://login.microsoftonline.com/tid/oauth2/v2.0/token");
+  });
+
+  it("REJECTS a document whose issuer does not match", async () => {
+    // Security control: this document decides where users are sent to authenticate,
+    // so one claiming to speak for another issuer must be discarded, not merged.
+    const got = await discoverAuthorizationServerMetadata(ISSUER, {
+      fetchFn: jsonFetch({
+        [`${ISSUER}/.well-known/oauth-authorization-server`]: {
+          issuer: "https://evil.example.com",
+          authorization_endpoint: "https://evil.example.com/authorize",
+        },
+      }),
+    });
+    expect(got).toBeUndefined();
+  });
+
+  it("returns undefined when the issuer is unreachable (never throws)", async () => {
+    const boom = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    await expect(discoverAuthorizationServerMetadata(ISSUER, { fetchFn: boom })).resolves.toBeUndefined();
+  });
+});
+
+describe("buildOAuthMetadata with discovery", () => {
+  const discovered = {
+    issuer: ISSUER,
+    authorization_endpoint: "https://real/authorize",
+    token_endpoint: "https://real/token",
+    jwks_uri: "https://real/jwks",
+    registration_endpoint: "https://real/register",
+    code_challenge_methods_supported: ["S256", "plain"],
+    scopes_supported: ["openid", "offline_access"],
+  };
+
+  it("prefers the discovered document over derived defaults", () => {
+    const md = buildOAuthMetadata(settings(), discovered);
+    expect(md.authorization_endpoint).toBe("https://real/authorize");
+    expect(md.token_endpoint).toBe("https://real/token");
+    expect(md.scopes_supported).toEqual(["openid", "offline_access"]);
+  });
+
+  it("an explicit env override still beats discovery", () => {
+    const md = buildOAuthMetadata(
+      settings({
+        authorizationEndpoint: "https://pinned/authorize",
+        explicitEndpoints: { authorization: true, token: false, registration: false, jwks: false },
+      }),
+      discovered,
+    );
+    expect(md.authorization_endpoint).toBe("https://pinned/authorize"); // override wins
+    expect(md.token_endpoint).toBe("https://real/token"); // not pinned -> discovered
+  });
+
+  it("OAUTH_SCOPES_SUPPORTED beats discovery, so both documents agree", () => {
+    const md = buildOAuthMetadata(settings({ scopesSupported: ["api://x/mcp"] }), discovered);
+    expect(md.scopes_supported).toEqual(["api://x/mcp"]);
+  });
+
+  it("registration=none is honoured even if the issuer advertises one", () => {
+    const md = buildOAuthMetadata(
+      settings({
+        registrationEndpoint: undefined,
+        explicitEndpoints: { authorization: false, token: false, registration: true, jwks: false },
+      }),
+      discovered,
+    );
+    expect(Object.keys(md)).not.toContain("registration_endpoint");
+  });
+
+  it("issuer is never taken from the document", () => {
+    const md = buildOAuthMetadata(settings(), { ...discovered, issuer: "https://other" });
+    expect(md.issuer).toBe(ISSUER);
+  });
+
+  it("without a document, output is exactly the pre-discovery defaults", () => {
+    const md = buildOAuthMetadata(settings());
+    expect(md.authorization_endpoint).toBe(`${ISSUER}/oauth2/authorize`);
+    expect(md.code_challenge_methods_supported).toEqual(["S256"]);
+    expect(md.scopes_supported).toEqual(["openid", "email", "profile"]);
   });
 });

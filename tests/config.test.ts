@@ -52,6 +52,8 @@ describe("loadConfig", () => {
       authorizationEndpoint: "https://auth.example.com/oauth2/authorize",
       tokenEndpoint: "https://auth.example.com/oauth2/token",
       registrationEndpoint: "https://auth.example.com/oauth2/register",
+      discovery: true,
+      explicitEndpoints: { authorization: false, token: false, registration: false, jwks: false },
     });
   });
 

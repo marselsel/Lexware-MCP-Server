@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11]
+
+### Fixed
+- **The authorization-server document is now read from the issuer instead of guessed.**
+  `buildOAuthMetadata` fabricated every field: endpoints derived from the WorkOS URL layout
+  (`{issuer}/oauth2/*`) plus hardcoded `grant_types_supported`, `code_challenge_methods_supported`
+  and `scopes_supported`. For any IdP that doesn't share WorkOS's layout the result was simply
+  wrong — Microsoft Entra's authorize endpoint is `/oauth2/v2.0/authorize`, not the
+  `/v2.0/oauth2/authorize` we derived — and the fabricated values were presented to clients as
+  fact. This was the root cause behind the `registration_endpoint` bug fixed in 0.1.10.
+
+  At startup the server now fetches the issuer's own metadata (RFC 8414, falling back to OIDC
+  discovery, three URL layouts tried in order) and advertises what it says. Precedence per field:
+  explicit env override, then the discovered document, then the derived default.
+
+  Safety properties, each covered by a test:
+  - A document whose `issuer` does not match the configured issuer is **discarded**, not merged.
+    This document tells clients where to send users to authenticate, so accepting one that speaks
+    for a different issuer would be a redirect-hijack primitive.
+  - `issuer` is never taken from the document — it must match the `iss` claim byte-for-byte.
+  - Any failure (unreachable, timeout, non-JSON, 404) falls back to the previous derived defaults
+    and logs a warning. Discovery can improve the document but never prevent startup.
+  - Explicit overrides still win, including `OAUTH_REGISTRATION_ENDPOINT=none` — discovery cannot
+    silently re-advertise DCR that an operator turned off.
+
+  Disable with `OAUTH_DISCOVERY=false`.
+
 ## [0.1.10]
 
 ### Fixed

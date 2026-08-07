@@ -28,6 +28,13 @@ export interface OAuthSettings {
    * `${issuer}/oauth2/register`; `undefined` omits the field (see AuthConfig).
    */
   registrationEndpoint?: string;
+  /** Endpoints pinned via env; these beat discovery (see AuthConfig). */
+  explicitEndpoints?: {
+    authorization: boolean;
+    token: boolean;
+    registration: boolean;
+    jwks: boolean;
+  };
 }
 
 /** True when `email`'s domain is in `allowed` (case-insensitive). Pure; unit-tested. */
@@ -48,30 +55,115 @@ export function isEmailDomainAllowed(email: string | undefined, allowed: string[
  */
 const DEFAULT_ADVERTISED_SCOPES = ["openid", "email", "profile"];
 
+/** Bound the discovery fetch so an unreachable issuer can't stall startup. */
+const DISCOVERY_TIMEOUT_MS = 5_000;
+
+/**
+ * Candidate well-known URLs for an issuer's authorization-server metadata, in
+ * preference order. Providers disagree on the layout, so try each:
+ *
+ * 1. RFC 8414 — well-known segment inserted *before* the issuer path.
+ * 2. OIDC Discovery — well-known segment *appended* (what Entra and Auth0 serve).
+ * 3. RFC 8414 spelling of the OIDC document, for providers that only publish that.
+ *
+ * For a path-less issuer (1) and (3) collapse to the same URL; the duplicate is
+ * harmless because the first hit wins.
+ */
+export function discoveryUrls(issuer: string): string[] {
+  const u = new URL(issuer);
+  const path = u.pathname.replace(/\/+$/, "");
+  const base = u.origin;
+  return [
+    `${base}/.well-known/oauth-authorization-server${path}`,
+    `${base}${path}/.well-known/openid-configuration`,
+    `${base}/.well-known/openid-configuration${path}`,
+  ];
+}
+
+/**
+ * Fetch the issuer's real authorization-server metadata.
+ *
+ * Returns `undefined` on any failure — unreachable issuer, non-JSON body, timeout,
+ * or an `issuer` claim that doesn't match. The caller then keeps the derived
+ * defaults, so discovery can only ever *improve* the advertised document, never
+ * prevent startup.
+ *
+ * The issuer check is a security control, not a sanity check: this document decides
+ * where clients send users to authenticate, so a document claiming to speak for a
+ * different issuer must be discarded rather than merged.
+ */
+export async function discoverAuthorizationServerMetadata(
+  issuer: string,
+  deps: VerifierDeps = {},
+): Promise<Partial<OAuthMetadata> | undefined> {
+  const fetchFn = deps.fetchFn ?? fetch;
+  for (const url of discoveryUrls(issuer)) {
+    try {
+      const res = await fetchFn(url, {
+        headers: { accept: "application/json" },
+        signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+      });
+      if (!res.ok) continue;
+      const doc = (await res.json()) as Partial<OAuthMetadata>;
+      // Trailing-slash-insensitive: some providers' canonical issuer ends in "/".
+      const norm = (s: string) => s.replace(/\/+$/, "");
+      if (typeof doc.issuer !== "string" || norm(doc.issuer) !== norm(issuer)) continue;
+      return doc;
+    } catch {
+      // Try the next layout; a total failure just means we keep the defaults.
+    }
+  }
+  return undefined;
+}
+
 /**
  * Authorization-server metadata advertised at `/.well-known/oauth-authorization-server`
  * (a convenience proxy; modern clients discover the AS via the protected-resource doc).
+ *
+ * Precedence for every field: an explicit env override wins, then whatever the issuer's
+ * own document says, then the derived WorkOS-layout default. Overrides beat discovery
+ * because they exist precisely to correct a document that is wrong or absent.
  */
-export function buildOAuthMetadata(oauth: OAuthSettings): OAuthMetadata {
-  // `issuer` must be exact. The endpoints default to the WorkOS-AuthKit layout but
-  // are overridable (config), so non-WorkOS issuers (Auth0 uses /authorize and
-  // /oauth/token, Keycloak uses /protocol/openid-connect/*) advertise correctly.
+export function buildOAuthMetadata(
+  oauth: OAuthSettings,
+  discovered?: Partial<OAuthMetadata>,
+): OAuthMetadata {
+  const ex = oauth.explicitEndpoints;
+  const pick = <K extends keyof OAuthMetadata>(
+    explicit: boolean,
+    ours: OAuthMetadata[K],
+    key: K,
+  ): OAuthMetadata[K] => (explicit ? ours : ((discovered?.[key] ?? ours) as OAuthMetadata[K]));
+
+  // `issuer` is never taken from the document — it is the operator's configured value
+  // and must match the `iss` claim byte-for-byte.
+  const registration = ex?.registration
+    ? oauth.registrationEndpoint
+    : (discovered?.registration_endpoint ?? oauth.registrationEndpoint);
+
   return {
     issuer: oauth.issuer,
-    authorization_endpoint: oauth.authorizationEndpoint,
-    token_endpoint: oauth.tokenEndpoint,
-    // Omitted entirely when not configured: `registration_endpoint` is optional in
-    // RFC 8414, and advertising one the issuer will reject is worse than saying nothing.
-    ...(oauth.registrationEndpoint ? { registration_endpoint: oauth.registrationEndpoint } : {}),
-    jwks_uri: oauth.jwksUrl,
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
-    code_challenge_methods_supported: ["S256"],
-    // Same source as the protected-resource document, so the two can't contradict each
-    // other: an operator who sets OAUTH_SCOPES_SUPPORTED for a non-WorkOS IdP would
-    // otherwise still see `openid email profile` advertised here. Falls back to the
-    // historic default when unset, leaving existing deployments unchanged.
-    scopes_supported: advertisedScopes(oauth) ?? DEFAULT_ADVERTISED_SCOPES,
+    authorization_endpoint: pick(
+      Boolean(ex?.authorization),
+      oauth.authorizationEndpoint,
+      "authorization_endpoint",
+    ),
+    token_endpoint: pick(Boolean(ex?.token), oauth.tokenEndpoint, "token_endpoint"),
+    // Omitted entirely when neither configured nor discovered: `registration_endpoint`
+    // is optional in RFC 8414, and advertising one the issuer will reject is worse than
+    // saying nothing.
+    ...(registration ? { registration_endpoint: registration } : {}),
+    jwks_uri: pick(Boolean(ex?.jwks), oauth.jwksUrl, "jwks_uri"),
+    response_types_supported: discovered?.response_types_supported ?? ["code"],
+    grant_types_supported: discovered?.grant_types_supported ?? [
+      "authorization_code",
+      "refresh_token",
+    ],
+    code_challenge_methods_supported: discovered?.code_challenge_methods_supported ?? ["S256"],
+    // OAUTH_SCOPES_SUPPORTED wins so this document and the protected-resource document
+    // can't contradict each other; then the issuer's real list; then the historic default.
+    scopes_supported:
+      advertisedScopes(oauth) ?? discovered?.scopes_supported ?? DEFAULT_ADVERTISED_SCOPES,
   };
 }
 

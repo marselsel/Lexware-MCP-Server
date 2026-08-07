@@ -3,7 +3,12 @@ import { mcpAuthMetadataRouter, McpServer, requireBearerAuth } from "skybridge/s
 import { bearerAuthMiddleware } from "./auth.js";
 import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { LexwareClient } from "./lexware/client.js";
-import { advertisedScopes, buildOAuthMetadata, createAccessTokenVerifier } from "./oauth.js";
+import {
+  advertisedScopes,
+  buildOAuthMetadata,
+  createAccessTokenVerifier,
+  discoverAuthorizationServerMetadata,
+} from "./oauth.js";
 import { registerTools } from "./tools/index.js";
 
 /** Base64 file uploads (upload-file / upload-voucher-file) travel inline in the JSON-RPC body. */
@@ -70,7 +75,7 @@ const client = new LexwareClient({
 const server = new McpServer(
   {
     name: "lexware-office",
-    version: "0.1.10",
+    version: "0.1.11",
   },
   { capabilities: {} },
 );
@@ -86,12 +91,23 @@ server.express.get("/status", (_req: Request, res: Response) => {
 });
 
 // Gate the MCP endpoint according to the configured auth mode.
+/** Set when the issuer's own metadata was fetched successfully; logged at startup. */
+let discoveryOutcome = "off";
+
 if (config.auth.mode === "oauth") {
   const oauth = config.auth;
+  // Read the issuer's real metadata rather than guessing endpoints from the WorkOS URL
+  // layout. Failure is non-fatal — we keep the derived defaults — so an unreachable IdP
+  // delays startup by at most the fetch timeout and never prevents it.
+  const discovered = oauth.discovery
+    ? await discoverAuthorizationServerMetadata(oauth.issuer)
+    : undefined;
+  if (oauth.discovery) discoveryOutcome = discovered ? "ok" : "failed(using-defaults)";
+
   // Advertise the authorization server so MCP clients can discover and sign in.
   server.use(
     mcpAuthMetadataRouter({
-      oauthMetadata: buildOAuthMetadata(oauth),
+      oauthMetadata: buildOAuthMetadata(oauth, discovered),
       resourceServerUrl: new URL(oauth.resource),
       // Undefined unless OAUTH_SCOPES_SUPPORTED is set, which keeps `scopes_supported`
       // out of the protected-resource document exactly as before (see advertisedScopes).
@@ -124,8 +140,15 @@ if (bodyParsingConfigured) {
 registerTools(server, client, config);
 
 console.error(
-  `[lexware-mcp] starting — ${describeCapabilities(config)} bodyLimit=${bodyParsingConfigured ? `${JSON_BODY_LIMIT} (/mcp, post-auth)` : "default(~100kb)"}`,
+  `[lexware-mcp] starting — ${describeCapabilities(config)} bodyLimit=${bodyParsingConfigured ? `${JSON_BODY_LIMIT} (/mcp, post-auth)` : "default(~100kb)"} discovery=${discoveryOutcome}`,
 );
+if (discoveryOutcome.startsWith("failed")) {
+  console.error(
+    "[lexware-mcp] WARNING: could not read the issuer's authorization-server metadata — " +
+      "advertising endpoints derived from the WorkOS URL layout, which may be wrong for your IdP. " +
+      "Set OAUTH_AUTHORIZATION_ENDPOINT / OAUTH_TOKEN_ENDPOINT explicitly, or OAUTH_DISCOVERY=false to silence this.",
+  );
+}
 for (const warning of config.warnings) {
   console.error(`[lexware-mcp] WARNING: ${warning}`);
 }

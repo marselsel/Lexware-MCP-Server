@@ -76,6 +76,24 @@ export type AuthConfig =
        * registration and fail instead of falling back to a pre-registered client.
        */
       registrationEndpoint: string | undefined;
+      /**
+       * Fetch the issuer's own authorization-server metadata at startup and advertise
+       * what it actually says, instead of guessing from the WorkOS URL layout. Falls
+       * back to the derived defaults if the issuer is unreachable or the document is
+       * unusable, so a network blip can never stop the server booting.
+       * Disable with OAUTH_DISCOVERY=false.
+       */
+      discovery: boolean;
+      /**
+       * Which endpoints the operator pinned via env. These beat anything discovery
+       * returns — an explicit override exists precisely to correct a wrong document.
+       */
+      explicitEndpoints: {
+        authorization: boolean;
+        token: boolean;
+        registration: boolean;
+        jwks: boolean;
+      };
     }
   | { mode: "static"; token: string }
   | { mode: "none" };
@@ -234,10 +252,21 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
             `${issuerBase}/oauth2/register`,
             "OAUTH_REGISTRATION_ENDPOINT",
           );
+    const discovery = parseBool(env.OAUTH_DISCOVERY, true);
+    const explicitEndpoints = {
+      authorization: Boolean(env.OAUTH_AUTHORIZATION_ENDPOINT?.trim()),
+      token: Boolean(env.OAUTH_TOKEN_ENDPOINT?.trim()),
+      // `none` counts as explicit: the operator deliberately said "no DCR", and a
+      // discovered registration_endpoint must not silently re-enable advertising it.
+      registration: Boolean(registrationRaw),
+      jwks: Boolean(env.OAUTH_JWKS_URL?.trim()),
+    };
     return {
       mode: "oauth",
       issuer,
       jwksUrl,
+      discovery,
+      explicitEndpoints,
       resource,
       verifyAudience,
       extraAudiences,
