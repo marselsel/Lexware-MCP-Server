@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10]
+
+### Fixed
+- **`registration_endpoint` is no longer advertised unconditionally.** `buildOAuthMetadata`
+  hardcoded `{issuer}/oauth2/register` into the authorization-server metadata whether or not the
+  issuer actually supports Dynamic Client Registration. Disabling DCR on the issuer therefore left
+  this server advertising an endpoint that answers `400 dynamic_client_registration_disabled`,
+  while the issuer's own metadata correctly omitted it — so a client discovering us would attempt
+  registration and fail, instead of concluding DCR is unavailable and using a pre-registered
+  client. `registration_endpoint` is optional in RFC 8414; omitting it is the correct signal.
+
+  Set `OAUTH_REGISTRATION_ENDPOINT=none` to omit the field. Unset keeps the derived default, so
+  existing deployments are unchanged.
+
 ## [0.1.9]
 
 Dependency maintenance only — no functional or behavioural change to the server.

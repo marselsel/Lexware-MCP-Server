@@ -23,8 +23,11 @@ export interface OAuthSettings {
   authorizationEndpoint: string;
   /** Token endpoint advertised in AS metadata. Defaults to `${issuer}/oauth2/token`. */
   tokenEndpoint: string;
-  /** Dynamic client registration endpoint advertised in AS metadata. Defaults to `${issuer}/oauth2/register`. */
-  registrationEndpoint: string;
+  /**
+   * Dynamic client registration endpoint advertised in AS metadata. Defaults to
+   * `${issuer}/oauth2/register`; `undefined` omits the field (see AuthConfig).
+   */
+  registrationEndpoint?: string;
 }
 
 /** True when `email`'s domain is in `allowed` (case-insensitive). Pure; unit-tested. */
@@ -57,7 +60,9 @@ export function buildOAuthMetadata(oauth: OAuthSettings): OAuthMetadata {
     issuer: oauth.issuer,
     authorization_endpoint: oauth.authorizationEndpoint,
     token_endpoint: oauth.tokenEndpoint,
-    registration_endpoint: oauth.registrationEndpoint,
+    // Omitted entirely when not configured: `registration_endpoint` is optional in
+    // RFC 8414, and advertising one the issuer will reject is worse than saying nothing.
+    ...(oauth.registrationEndpoint ? { registration_endpoint: oauth.registrationEndpoint } : {}),
     jwks_uri: oauth.jwksUrl,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],

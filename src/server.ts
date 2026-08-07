@@ -70,7 +70,7 @@ const client = new LexwareClient({
 const server = new McpServer(
   {
     name: "lexware-office",
-    version: "0.1.9",
+    version: "0.1.10",
   },
   { capabilities: {} },
 );

@@ -285,3 +285,45 @@ describe("buildOAuthMetadata scopes_supported", () => {
     expect(advertisedScopes(oauth)).toEqual(["api://x/mcp.access"]);
   });
 });
+
+describe("buildOAuthMetadata registration_endpoint", () => {
+  it("advertises it when configured", () => {
+    expect(buildOAuthMetadata(settings()).registration_endpoint).toBe(
+      `${ISSUER}/oauth2/register`,
+    );
+  });
+
+  it("omits the KEY entirely when the issuer has no DCR", () => {
+    const md = buildOAuthMetadata(settings({ registrationEndpoint: undefined }));
+    // Key absence, not just a falsy value: a client must see no registration_endpoint
+    // at all rather than attempt DCR against an endpoint that rejects every request.
+    expect(Object.keys(md)).not.toContain("registration_endpoint");
+  });
+});
+
+describe("served authorization-server document", () => {
+  it("drops registration_endpoint from the real HTTP response", async () => {
+    const oauth = settings({ registrationEndpoint: undefined });
+    const app = express();
+    app.use(
+      mcpAuthMetadataRouter({
+        oauthMetadata: buildOAuthMetadata(oauth),
+        resourceServerUrl: new URL(oauth.resource),
+        scopesSupported: advertisedScopes(oauth),
+      }),
+    );
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const res = await fetch(
+        `http://127.0.0.1:${port}/.well-known/oauth-authorization-server`,
+      );
+      const doc = (await res.json()) as Record<string, unknown>;
+      expect(Object.keys(doc)).not.toContain("registration_endpoint");
+      expect(doc.issuer).toBe(ISSUER);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

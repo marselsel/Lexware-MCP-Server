@@ -68,8 +68,14 @@ export type AuthConfig =
       authorizationEndpoint: string;
       /** Token endpoint advertised in AS metadata (overridable for non-WorkOS IdPs). */
       tokenEndpoint: string;
-      /** Dynamic client registration endpoint advertised in AS metadata. */
-      registrationEndpoint: string;
+      /**
+       * Dynamic client registration endpoint advertised in AS metadata, or `undefined`
+       * to advertise none. Set `OAUTH_REGISTRATION_ENDPOINT=none` when the issuer does
+       * not support DCR: advertising an endpoint that rejects every request is worse
+       * than omitting the (optional, per RFC 8414) field, because a client will attempt
+       * registration and fail instead of falling back to a pre-registered client.
+       */
+      registrationEndpoint: string | undefined;
     }
   | { mode: "static"; token: string }
   | { mode: "none" };
@@ -216,11 +222,18 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
       `${issuerBase}/oauth2/token`,
       "OAUTH_TOKEN_ENDPOINT",
     );
-    const registrationEndpoint = normalizeUrl(
-      env.OAUTH_REGISTRATION_ENDPOINT,
-      `${issuerBase}/oauth2/register`,
-      "OAUTH_REGISTRATION_ENDPOINT",
-    );
+    // `none` opts out of advertising DCR entirely. Checked before normalizeUrl, which
+    // would reject it as an invalid URL. Any other value (or unset) keeps the derived
+    // default, so existing deployments are unaffected.
+    const registrationRaw = env.OAUTH_REGISTRATION_ENDPOINT?.trim();
+    const registrationEndpoint =
+      registrationRaw?.toLowerCase() === "none"
+        ? undefined
+        : normalizeUrl(
+            env.OAUTH_REGISTRATION_ENDPOINT,
+            `${issuerBase}/oauth2/register`,
+            "OAUTH_REGISTRATION_ENDPOINT",
+          );
     return {
       mode: "oauth",
       issuer,
