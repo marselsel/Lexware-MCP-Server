@@ -40,6 +40,12 @@ export function isEmailDomainAllowed(email: string | undefined, allowed: string[
 }
 
 /**
+ * Scopes advertised when `OAUTH_SCOPES_SUPPORTED` is unset. Historic default, kept so
+ * an existing deployment's authorization-server metadata is unchanged.
+ */
+const DEFAULT_ADVERTISED_SCOPES = ["openid", "email", "profile"];
+
+/**
  * Authorization-server metadata advertised at `/.well-known/oauth-authorization-server`
  * (a convenience proxy; modern clients discover the AS via the protected-resource doc).
  */
@@ -56,7 +62,11 @@ export function buildOAuthMetadata(oauth: OAuthSettings): OAuthMetadata {
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
-    scopes_supported: ["openid", "email", "profile"],
+    // Same source as the protected-resource document, so the two can't contradict each
+    // other: an operator who sets OAUTH_SCOPES_SUPPORTED for a non-WorkOS IdP would
+    // otherwise still see `openid email profile` advertised here. Falls back to the
+    // historic default when unset, leaving existing deployments unchanged.
+    scopes_supported: advertisedScopes(oauth) ?? DEFAULT_ADVERTISED_SCOPES,
   };
 }
 

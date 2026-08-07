@@ -196,8 +196,11 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
       .filter(Boolean);
     // Not run through normalizeUrl: scopes are opaque strings, and IdPs use both bare
     // names ("openid") and URI-shaped ones ("api://<client-id>/mcp.access").
+    // Split on commas AND whitespace: a scope value can never contain a space
+    // (RFC 6749 §3.3), so `openid email` — the form scopes appear in everywhere else
+    // in OAuth — is unambiguous and must not become one bogus scope named "openid email".
     const scopesSupported = (env.OAUTH_SCOPES_SUPPORTED ?? "")
-      .split(",")
+      .split(/[,\s]+/)
       .map((s) => s.trim())
       .filter(Boolean);
     // Endpoints default to the WorkOS-AuthKit layout but are overridable so other

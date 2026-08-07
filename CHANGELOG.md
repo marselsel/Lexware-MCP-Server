@@ -27,6 +27,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   breaking sign-in before it starts. Unset by default: no scopes are advertised and the document is
   unchanged, so existing deployments are unaffected.
 
+  The value drives **both** well-known documents. `buildOAuthMetadata` previously hardcoded
+  `scopes_supported: ["openid","email","profile"]` on the authorization-server document, so
+  configuring scopes for a non-WorkOS IdP would have left the two documents contradicting each other
+  — the protected-resource doc naming (say) `api://<id>/mcp.access` while the authorization-server doc
+  still claimed `openid email profile`. When `OAUTH_SCOPES_SUPPORTED` is unset the authorization-server
+  document keeps that historic default, so existing deployments see no change.
+
+  Scopes may be separated by commas **or** whitespace. A scope value can never contain a space
+  (RFC 6749 §3.3), so `OAUTH_SCOPES_SUPPORTED="openid email profile"` — the form scopes take
+  everywhere else in OAuth — is unambiguous, and previously became a single invalid scope.
+
 ## [0.1.7]
 
 ### Added

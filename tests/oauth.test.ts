@@ -266,3 +266,22 @@ describe("protected-resource metadata (RFC 9728)", () => {
     expect(doc.scopes_supported).toEqual(["openid", "email", "api://x/mcp.access"]);
   });
 });
+
+describe("buildOAuthMetadata scopes_supported", () => {
+  it("keeps the historic default when OAUTH_SCOPES_SUPPORTED is unset", () => {
+    expect(buildOAuthMetadata(settings()).scopes_supported).toEqual(["openid", "email", "profile"]);
+    expect(buildOAuthMetadata(settings({ scopesSupported: [] })).scopes_supported).toEqual([
+      "openid",
+      "email",
+      "profile",
+    ]);
+  });
+
+  it("uses the configured scopes so the AS and protected-resource docs cannot contradict", () => {
+    const oauth = settings({ scopesSupported: ["api://x/mcp.access"] });
+    // Both documents must name the same scopes; an operator on a non-WorkOS IdP would
+    // otherwise still see `openid email profile` advertised in the AS metadata.
+    expect(buildOAuthMetadata(oauth).scopes_supported).toEqual(["api://x/mcp.access"]);
+    expect(advertisedScopes(oauth)).toEqual(["api://x/mcp.access"]);
+  });
+});
