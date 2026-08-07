@@ -4,10 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.8]
+
+Interoperability with IdPs that do not honour the OAuth Resource Indicator (Microsoft Entra in
+particular). Both options are unset by default and change nothing for existing deployments.
+Thanks to [@gutencoder](https://github.com/gutencoder) for both features.
 
 ### Added
-- **`OAUTH_AUDIENCE`: accept additional `aud` values.** Comma-separated, additive to the audience
+- **`OAUTH_AUDIENCE`: accept additional `aud` values.** ([#32]) Comma-separated, additive to the audience
   derived from `OAUTH_RESOURCE`. Some IdPs ignore the Resource Indicator and mint a token whose `aud`
   is not the resource URL at all — Microsoft Entra always puts the API's client ID (a GUID) in the `aud`
   of a v2.0 access token, never the Application ID URI. Previously the expected audience was derived
@@ -17,7 +21,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `OAUTH_VERIFY_AUDIENCE=false`, which accepts *any* token from the issuer (confused-deputy risk).
   `OAUTH_VERIFY_AUDIENCE` stays `true` with this option — the check is still enforced, just against a
   value the IdP actually issues. Unset by default; no change for existing deployments.
-- **`OAUTH_SCOPES_SUPPORTED`: advertise scopes in the protected-resource metadata.** Comma-separated;
+- **`OAUTH_SCOPES_SUPPORTED`: advertise scopes in the protected-resource metadata.** ([#33]) Comma-separated;
   passed through to `mcpAuthMetadataRouter` as `scopesSupported`, which publishes it as
   `scopes_supported` (RFC 9728). The SDK has always supported the option, but the server never passed
   it and there was no way to configure it, so the protected-resource document named no scopes at all.
@@ -37,6 +41,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Scopes may be separated by commas **or** whitespace. A scope value can never contain a space
   (RFC 6749 §3.3), so `OAUTH_SCOPES_SUPPORTED="openid email profile"` — the form scopes take
   everywhere else in OAuth — is unambiguous, and previously became a single invalid scope.
+
+### Security
+- **Dependency advisories cleared.** `npm audit fix` (lockfile only — no declared dependency range
+  changed) resolved 9 advisories, 4 of them high: `fast-uri` host confusion, `ip-address` SSRF and
+  trust-boundary bypass, `postcss` source-map path traversal, and a `hono` CORS ReDoS. One low
+  advisory remains (`esbuild`, reached via `skybridge`), a Windows dev-server issue that does not
+  affect the Linux container. This also restores CI's `npm audit --omit=dev --audit-level=high` gate,
+  which had been failing on `main`.
+
+[#32]: https://github.com/marselsel/lexware-mcp/pull/32
+[#33]: https://github.com/marselsel/lexware-mcp/pull/33
 
 ## [0.1.7]
 
