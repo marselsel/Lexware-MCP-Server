@@ -34,6 +34,7 @@ export interface OAuthSettings {
     token: boolean;
     registration: boolean;
     jwks: boolean;
+    userinfo: boolean;
   };
 }
 
@@ -55,59 +56,104 @@ export function isEmailDomainAllowed(email: string | undefined, allowed: string[
  */
 const DEFAULT_ADVERTISED_SCOPES = ["openid", "email", "profile"];
 
-/** Bound the discovery fetch so an unreachable issuer can't stall startup. */
+/** Bound TOTAL discovery time so an unreachable issuer can't stall startup. */
 const DISCOVERY_TIMEOUT_MS = 5_000;
 
 /**
- * Candidate well-known URLs for an issuer's authorization-server metadata, in
- * preference order. Providers disagree on the layout, so try each:
+ * The issuer's metadata as fetched. `userinfo_endpoint` is an OIDC field absent from
+ * the RFC 8414 `OAuthMetadata` type but present in an openid-configuration document; we
+ * use it for the email-domain fallback, so it must be readable here.
+ */
+export type DiscoveredMetadata = Partial<OAuthMetadata> & { userinfo_endpoint?: string };
+
+/**
+ * Accept a discovered endpoint URL only when it is safe to advertise AND to use:
+ * `https` everywhere, `http` only for loopback (local mocks/tests). A discovered value
+ * that fails this — an `http://` downgrade, a `data:`/`file:` URI, a malformed string —
+ * is rejected, so we fall back to the configured/derived endpoint instead of trusting it.
+ *
+ * Load-bearing for `jwks_uri`: that URL now drives signature verification, so an
+ * unvalidated one would be a downgrade path straight into the auth check.
+ */
+export function safeDiscoveredUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value === "") return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol === "https:") return value;
+  const loopback =
+    url.hostname === "localhost" ||
+    url.hostname === "127.0.0.1" ||
+    url.hostname === "[::1]" ||
+    url.hostname === "::1";
+  return url.protocol === "http:" && loopback ? value : undefined;
+}
+
+/**
+ * Candidate well-known URLs for an issuer's metadata, in preference order and
+ * de-duplicated. Providers disagree on the layout:
  *
  * 1. RFC 8414 — well-known segment inserted *before* the issuer path.
- * 2. OIDC Discovery — well-known segment *appended* (what Entra and Auth0 serve).
+ * 2. OIDC Discovery — well-known segment *appended* (Entra, Auth0, Keycloak).
  * 3. RFC 8414 spelling of the OIDC document, for providers that only publish that.
  *
- * For a path-less issuer (1) and (3) collapse to the same URL; the duplicate is
- * harmless because the first hit wins.
+ * For a path-less issuer (1) and (3) are byte-identical; the dedupe stops us burning
+ * the timeout budget on the same URL twice.
  */
 export function discoveryUrls(issuer: string): string[] {
   const u = new URL(issuer);
   const path = u.pathname.replace(/\/+$/, "");
   const base = u.origin;
   return [
-    `${base}/.well-known/oauth-authorization-server${path}`,
-    `${base}${path}/.well-known/openid-configuration`,
-    `${base}/.well-known/openid-configuration${path}`,
+    ...new Set([
+      `${base}/.well-known/oauth-authorization-server${path}`,
+      `${base}${path}/.well-known/openid-configuration`,
+      `${base}/.well-known/openid-configuration${path}`,
+    ]),
   ];
 }
 
+/** Trailing-slash-insensitive issuer comparison; some issuers' canonical form ends in "/". */
+function sameIssuer(a: string, b: string): boolean {
+  return a.replace(/\/+$/, "") === b.replace(/\/+$/, "");
+}
+
 /**
- * Fetch the issuer's real authorization-server metadata.
+ * Fetch the issuer's real metadata document.
  *
  * Returns `undefined` on any failure — unreachable issuer, non-JSON body, timeout,
- * or an `issuer` claim that doesn't match. The caller then keeps the derived
- * defaults, so discovery can only ever *improve* the advertised document, never
- * prevent startup.
+ * HTTP error, or an `issuer` claim that doesn't match. The caller then keeps the
+ * configured/derived defaults, so discovery can only ever *improve* what we advertise
+ * and verify against, and can never prevent startup.
  *
- * The issuer check is a security control, not a sanity check: this document decides
- * where clients send users to authenticate, so a document claiming to speak for a
- * different issuer must be discarded rather than merged.
+ * Two hard rules, both security controls rather than sanity checks:
+ * - The document's `issuer` MUST match the configured issuer. This document decides
+ *   where clients authenticate and (now) which keys we verify against, so one that
+ *   speaks for a different issuer is discarded, not merged.
+ * - Total time across all candidate URLs is bounded by {@link DISCOVERY_TIMEOUT_MS} —
+ *   a hanging issuer delays startup by at most that once, not once per URL.
  */
 export async function discoverAuthorizationServerMetadata(
   issuer: string,
-  deps: VerifierDeps = {},
-): Promise<Partial<OAuthMetadata> | undefined> {
+  deps: VerifierDeps & { now?: () => number } = {},
+): Promise<DiscoveredMetadata | undefined> {
   const fetchFn = deps.fetchFn ?? fetch;
+  const now = deps.now ?? Date.now;
+  const deadline = now() + DISCOVERY_TIMEOUT_MS;
   for (const url of discoveryUrls(issuer)) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
     try {
       const res = await fetchFn(url, {
         headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(remaining),
       });
       if (!res.ok) continue;
-      const doc = (await res.json()) as Partial<OAuthMetadata>;
-      // Trailing-slash-insensitive: some providers' canonical issuer ends in "/".
-      const norm = (s: string) => s.replace(/\/+$/, "");
-      if (typeof doc.issuer !== "string" || norm(doc.issuer) !== norm(issuer)) continue;
+      const doc = (await res.json()) as DiscoveredMetadata;
+      if (typeof doc.issuer !== "string" || !sameIssuer(doc.issuer, issuer)) continue;
       return doc;
     } catch {
       // Try the next layout; a total failure just means we keep the defaults.
@@ -117,43 +163,72 @@ export async function discoverAuthorizationServerMetadata(
 }
 
 /**
+ * Resolve every OAuth endpoint to a single effective value, used for BOTH the advertised
+ * metadata and the actual token verification, so the two can never disagree. Precedence
+ * per field:
+ *
+ *   explicit env override  >  the issuer's discovered document  >  derived default
+ *
+ * Explicit wins because an override exists to correct a wrong/absent document. Discovered
+ * URLs are validated ({@link safeDiscoveredUrl}) before use — a downgraded or malformed
+ * value is ignored in favour of the derived default.
+ *
+ * `registrationEndpoint` is special: when discovery SUCCEEDED, the issuer's document is
+ * authoritative about whether DCR exists, so an ABSENT `registration_endpoint` means
+ * "omit it" — we must NOT fall back to the derived guess (that would re-advertise a
+ * broken endpoint, the bug 0.1.10 fixed). The derived guess applies only when discovery
+ * did not run or failed (`discovered === undefined`).
+ */
+export function resolveOAuthEndpoints(
+  oauth: OAuthSettings,
+  discovered?: DiscoveredMetadata,
+): OAuthSettings {
+  const ex = oauth.explicitEndpoints;
+  const resolve = (explicit: boolean | undefined, discoveredUrl: unknown, derived: string): string =>
+    explicit ? derived : (safeDiscoveredUrl(discoveredUrl) ?? derived);
+
+  const registrationEndpoint = ex?.registration
+    ? oauth.registrationEndpoint // explicit (incl. `none` → undefined) always wins
+    : discovered
+      ? safeDiscoveredUrl(discovered.registration_endpoint) // authoritative: absent/invalid → undefined
+      : oauth.registrationEndpoint; // no discovery → derived guess
+
+  return {
+    ...oauth,
+    authorizationEndpoint: resolve(
+      ex?.authorization,
+      discovered?.authorization_endpoint,
+      oauth.authorizationEndpoint,
+    ),
+    tokenEndpoint: resolve(ex?.token, discovered?.token_endpoint, oauth.tokenEndpoint),
+    jwksUrl: resolve(ex?.jwks, discovered?.jwks_uri, oauth.jwksUrl),
+    userinfoUrl: resolve(ex?.userinfo, discovered?.userinfo_endpoint, oauth.userinfoUrl),
+    registrationEndpoint,
+  };
+}
+
+/**
  * Authorization-server metadata advertised at `/.well-known/oauth-authorization-server`
  * (a convenience proxy; modern clients discover the AS via the protected-resource doc).
  *
- * Precedence for every field: an explicit env override wins, then whatever the issuer's
- * own document says, then the derived WorkOS-layout default. Overrides beat discovery
- * because they exist precisely to correct a document that is wrong or absent.
+ * Endpoints come straight from `oauth`, which the caller has already passed through
+ * {@link resolveOAuthEndpoints} — so the document advertises exactly the endpoints the
+ * server verifies against. `discovered` supplies only the capability arrays the server
+ * itself doesn't consume (grant types, response types, PKCE methods, scopes).
  */
 export function buildOAuthMetadata(
   oauth: OAuthSettings,
-  discovered?: Partial<OAuthMetadata>,
+  discovered?: DiscoveredMetadata,
 ): OAuthMetadata {
-  const ex = oauth.explicitEndpoints;
-  const pick = <K extends keyof OAuthMetadata>(
-    explicit: boolean,
-    ours: OAuthMetadata[K],
-    key: K,
-  ): OAuthMetadata[K] => (explicit ? ours : ((discovered?.[key] ?? ours) as OAuthMetadata[K]));
-
-  // `issuer` is never taken from the document — it is the operator's configured value
-  // and must match the `iss` claim byte-for-byte.
-  const registration = ex?.registration
-    ? oauth.registrationEndpoint
-    : (discovered?.registration_endpoint ?? oauth.registrationEndpoint);
-
   return {
+    // `issuer` is never taken from the document — it must match the `iss` claim exactly.
     issuer: oauth.issuer,
-    authorization_endpoint: pick(
-      Boolean(ex?.authorization),
-      oauth.authorizationEndpoint,
-      "authorization_endpoint",
-    ),
-    token_endpoint: pick(Boolean(ex?.token), oauth.tokenEndpoint, "token_endpoint"),
-    // Omitted entirely when neither configured nor discovered: `registration_endpoint`
-    // is optional in RFC 8414, and advertising one the issuer will reject is worse than
-    // saying nothing.
-    ...(registration ? { registration_endpoint: registration } : {}),
-    jwks_uri: pick(Boolean(ex?.jwks), oauth.jwksUrl, "jwks_uri"),
+    authorization_endpoint: oauth.authorizationEndpoint,
+    token_endpoint: oauth.tokenEndpoint,
+    // Omitted when neither configured nor discovered: `registration_endpoint` is optional
+    // in RFC 8414, and advertising one the issuer will reject is worse than saying nothing.
+    ...(oauth.registrationEndpoint ? { registration_endpoint: oauth.registrationEndpoint } : {}),
+    jwks_uri: oauth.jwksUrl,
     response_types_supported: discovered?.response_types_supported ?? ["code"],
     grant_types_supported: discovered?.grant_types_supported ?? [
       "authorization_code",

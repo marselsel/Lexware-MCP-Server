@@ -53,7 +53,7 @@ describe("loadConfig", () => {
       tokenEndpoint: "https://auth.example.com/oauth2/token",
       registrationEndpoint: "https://auth.example.com/oauth2/register",
       discovery: true,
-      explicitEndpoints: { authorization: false, token: false, registration: false, jwks: false },
+      explicitEndpoints: { authorization: false, token: false, registration: false, jwks: false, userinfo: false },
     });
   });
 
@@ -70,6 +70,22 @@ describe("loadConfig", () => {
       tokenEndpoint: "https://tenant.auth0.com/oauth/token",
       // registration endpoint keeps the derived default when not overridden
       registrationEndpoint: "https://tenant.auth0.com/oauth2/register",
+      // only the two set endpoints are flagged explicit (these beat discovery)
+      explicitEndpoints: { authorization: true, token: true, registration: false, jwks: false, userinfo: false },
+    });
+  });
+
+  it("flags an explicit OAUTH_USERINFO_URL so it beats discovery", () => {
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      SERVER_URL: "https://mcp.example.com",
+      OAUTH_USERINFO_URL: "https://auth.example.com/custom/userinfo",
+      OAUTH_JWKS_URL: "https://auth.example.com/custom/jwks",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth).toMatchObject({
+      userinfoUrl: "https://auth.example.com/custom/userinfo",
+      explicitEndpoints: { jwks: true, userinfo: true, authorization: false, token: false, registration: false },
     });
   });
 

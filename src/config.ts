@@ -93,6 +93,7 @@ export type AuthConfig =
         token: boolean;
         registration: boolean;
         jwks: boolean;
+        userinfo: boolean;
       };
     }
   | { mode: "static"; token: string }
@@ -260,6 +261,7 @@ function resolveAuth(env: NodeJS.ProcessEnv): AuthConfig {
       // discovered registration_endpoint must not silently re-enable advertising it.
       registration: Boolean(registrationRaw),
       jwks: Boolean(env.OAUTH_JWKS_URL?.trim()),
+      userinfo: Boolean(env.OAUTH_USERINFO_URL?.trim()),
     };
     return {
       mode: "oauth",

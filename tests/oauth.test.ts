@@ -10,6 +10,8 @@ import {
   discoverAuthorizationServerMetadata,
   discoveryUrls,
   createAccessTokenVerifier,
+  resolveOAuthEndpoints,
+  safeDiscoveredUrl,
   isEmailDomainAllowed,
   isEmailVerified,
   type OAuthSettings,
@@ -356,6 +358,14 @@ describe("discoveryUrls", () => {
       "https://login.microsoftonline.com/tid/v2.0/.well-known/openid-configuration",
     );
   });
+
+  it("de-duplicates the two identical layouts for a path-less issuer", () => {
+    // Finding #3: for a path-less issuer layouts (1) and (3) are byte-identical; without
+    // dedupe an unreachable issuer would burn a timeout on the same URL twice.
+    const urls = discoveryUrls("https://auth.example.com");
+    expect(urls.length).toBe(2);
+    expect(new Set(urls).size).toBe(2);
+  });
 });
 
 describe("discoverAuthorizationServerMetadata", () => {
@@ -374,6 +384,20 @@ describe("discoverAuthorizationServerMetadata", () => {
       fetchFn: jsonFetch({ [`${iss}/.well-known/openid-configuration`]: doc }),
     });
     expect(got?.token_endpoint).toBe("https://login.microsoftonline.com/tid/oauth2/v2.0/token");
+  });
+
+  it("accepts a document whose issuer differs only by a trailing slash", async () => {
+    // Finding #5 (issuer-slash): some issuers' canonical form ends in "/". This must
+    // match, while a genuinely different issuer (tested below) must not.
+    const got = await discoverAuthorizationServerMetadata(ISSUER, {
+      fetchFn: jsonFetch({
+        [`${ISSUER}/.well-known/oauth-authorization-server`]: {
+          issuer: `${ISSUER}/`,
+          token_endpoint: `${ISSUER}/real/token`,
+        },
+      }),
+    });
+    expect(got?.token_endpoint).toBe(`${ISSUER}/real/token`);
   });
 
   it("REJECTS a document whose issuer does not match", async () => {
@@ -396,56 +420,161 @@ describe("discoverAuthorizationServerMetadata", () => {
     }) as unknown as typeof fetch;
     await expect(discoverAuthorizationServerMetadata(ISSUER, { fetchFn: boom })).resolves.toBeUndefined();
   });
+
+  it("bounds TOTAL time across candidate URLs, not per-URL (finding #3)", async () => {
+    // A path-bearing issuer yields three distinct URLs. With a 5s TOTAL budget and each
+    // attempt 'consuming' 3s of a fake clock, only the first two can be tried — the third
+    // is past the deadline. This pins the worst case at ~5s, not 3 x 5s.
+    let clock = 1_000;
+    const tried: string[] = [];
+    const slowBoom = (async (url: string | URL) => {
+      tried.push(String(url));
+      clock += 3_000;
+      throw new Error("timeout");
+    }) as unknown as typeof fetch;
+    const got = await discoverAuthorizationServerMetadata("https://p.example/tid", {
+      fetchFn: slowBoom,
+      now: () => clock,
+    });
+    expect(got).toBeUndefined();
+    expect(tried.length).toBe(2); // third URL is past the deadline -> not attempted
+  });
 });
 
-describe("buildOAuthMetadata with discovery", () => {
+/** All-false explicit-override set with the given fields flipped on. */
+const EXPLICIT = (
+  on: Partial<Record<"authorization" | "token" | "registration" | "jwks" | "userinfo", boolean>> = {},
+) => ({ authorization: false, token: false, registration: false, jwks: false, userinfo: false, ...on });
+
+const DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code";
+
+describe("safeDiscoveredUrl", () => {
+  it("accepts https and http-on-loopback, rejects everything else", () => {
+    expect(safeDiscoveredUrl("https://issuer.example/jwks")).toBe("https://issuer.example/jwks");
+    expect(safeDiscoveredUrl("http://127.0.0.1:8080/jwks")).toBe("http://127.0.0.1:8080/jwks");
+    expect(safeDiscoveredUrl("http://localhost/jwks")).toBe("http://localhost/jwks");
+    expect(safeDiscoveredUrl("http://evil.example/jwks")).toBeUndefined(); // downgrade
+    expect(safeDiscoveredUrl("data:text/plain,x")).toBeUndefined();
+    expect(safeDiscoveredUrl("file:///etc/passwd")).toBeUndefined();
+    expect(safeDiscoveredUrl("not a url")).toBeUndefined();
+    expect(safeDiscoveredUrl("")).toBeUndefined();
+    expect(safeDiscoveredUrl(undefined)).toBeUndefined();
+    expect(safeDiscoveredUrl(42)).toBeUndefined();
+  });
+});
+
+describe("resolveOAuthEndpoints", () => {
   const discovered = {
     issuer: ISSUER,
-    authorization_endpoint: "https://real/authorize",
-    token_endpoint: "https://real/token",
-    jwks_uri: "https://real/jwks",
-    registration_endpoint: "https://real/register",
-    code_challenge_methods_supported: ["S256", "plain"],
-    scopes_supported: ["openid", "offline_access"],
+    authorization_endpoint: "https://real.example/authorize",
+    token_endpoint: "https://real.example/token",
+    jwks_uri: "https://real.example/jwks",
+    userinfo_endpoint: "https://real.example/userinfo",
+    registration_endpoint: "https://real.example/register",
   };
 
-  it("prefers the discovered document over derived defaults", () => {
-    const md = buildOAuthMetadata(settings(), discovered);
-    expect(md.authorization_endpoint).toBe("https://real/authorize");
-    expect(md.token_endpoint).toBe("https://real/token");
-    expect(md.scopes_supported).toEqual(["openid", "offline_access"]);
+  it("prefers discovered endpoints over derived defaults — including jwks and userinfo", () => {
+    const eff = resolveOAuthEndpoints(settings(), discovered);
+    expect(eff.authorizationEndpoint).toBe("https://real.example/authorize");
+    expect(eff.tokenEndpoint).toBe("https://real.example/token");
+    // These two now flow into the verifier, not just the advertised document:
+    expect(eff.jwksUrl).toBe("https://real.example/jwks");
+    expect(eff.userinfoUrl).toBe("https://real.example/userinfo");
+    expect(eff.registrationEndpoint).toBe("https://real.example/register");
   });
 
-  it("an explicit env override still beats discovery", () => {
-    const md = buildOAuthMetadata(
+  it("an explicit override still beats discovery, per field", () => {
+    const eff = resolveOAuthEndpoints(
       settings({
         authorizationEndpoint: "https://pinned/authorize",
-        explicitEndpoints: { authorization: true, token: false, registration: false, jwks: false },
+        explicitEndpoints: EXPLICIT({ authorization: true }),
       }),
       discovered,
     );
-    expect(md.authorization_endpoint).toBe("https://pinned/authorize"); // override wins
-    expect(md.token_endpoint).toBe("https://real/token"); // not pinned -> discovered
+    expect(eff.authorizationEndpoint).toBe("https://pinned/authorize"); // pinned wins
+    expect(eff.tokenEndpoint).toBe("https://real.example/token"); // not pinned -> discovered
   });
 
-  it("OAUTH_SCOPES_SUPPORTED beats discovery, so both documents agree", () => {
-    const md = buildOAuthMetadata(settings({ scopesSupported: ["api://x/mcp"] }), discovered);
-    expect(md.scopes_supported).toEqual(["api://x/mcp"]);
+  // Finding #1 — the #36 regression. A successful discovery is authoritative about DCR.
+  it("omits registration when discovery SUCCEEDS but the issuer advertises none", () => {
+    const eff = resolveOAuthEndpoints(settings(), { issuer: ISSUER }); // no registration_endpoint
+    expect(eff.registrationEndpoint).toBeUndefined(); // NOT the derived guess
+  });
+
+  it("keeps the derived registration guess only when discovery did NOT run", () => {
+    const eff = resolveOAuthEndpoints(settings(), undefined);
+    expect(eff.registrationEndpoint).toBe(`${ISSUER}/oauth2/register`);
+    expect(eff.authorizationEndpoint).toBe(`${ISSUER}/oauth2/authorize`);
+    expect(eff.jwksUrl).toBe(`${ISSUER}/oauth2/jwks`);
   });
 
   it("registration=none is honoured even if the issuer advertises one", () => {
-    const md = buildOAuthMetadata(
-      settings({
-        registrationEndpoint: undefined,
-        explicitEndpoints: { authorization: false, token: false, registration: true, jwks: false },
-      }),
+    const eff = resolveOAuthEndpoints(
+      settings({ registrationEndpoint: undefined, explicitEndpoints: EXPLICIT({ registration: true }) }),
       discovered,
     );
-    expect(Object.keys(md)).not.toContain("registration_endpoint");
+    expect(eff.registrationEndpoint).toBeUndefined();
+  });
+
+  // Finding #4 — discovered URLs are validated before use.
+  it("ignores an unsafe discovered URL and keeps the derived default", () => {
+    const eff = resolveOAuthEndpoints(settings(), {
+      issuer: ISSUER,
+      authorization_endpoint: "http://evil.example/authorize", // downgrade -> rejected
+      jwks_uri: "not a url", // malformed -> rejected
+      token_endpoint: "https://ok.example/token", // valid -> used
+    });
+    expect(eff.authorizationEndpoint).toBe(`${ISSUER}/oauth2/authorize`);
+    expect(eff.jwksUrl).toBe(`${ISSUER}/oauth2/jwks`);
+    expect(eff.tokenEndpoint).toBe("https://ok.example/token");
+  });
+});
+
+// Finding #2 — the verifier consumes the resolved userinfo endpoint, not a derived guess.
+describe("discovery feeds the verifier (no advertised-vs-verified divergence)", () => {
+  it("fetches email from the DISCOVERED userinfo endpoint", async () => {
+    const eff = resolveOAuthEndpoints(settings({ allowedEmailDomains: ["example.com"] }), {
+      issuer: ISSUER,
+      userinfo_endpoint: "https://real.example/userinfo",
+    });
+    let calledUrl: string | undefined;
+    const capturingFetch = (async (url: string | URL) => {
+      calledUrl = String(url);
+      return new Response(JSON.stringify({ email: "u@example.com", email_verified: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const verify = createAccessTokenVerifier(eff, { jwks, fetchFn: capturingFetch });
+    const token = await sign({ sub: "u" }); // no email claim -> forces the userinfo fallback
+    await expect(verify(token)).resolves.toMatchObject({ extra: { email: "u@example.com" } });
+    expect(calledUrl).toBe("https://real.example/userinfo"); // the discovered one, not the derived
+  });
+});
+
+describe("buildOAuthMetadata", () => {
+  it("reflects the already-resolved endpoints verbatim and passes through capability arrays", () => {
+    const eff = resolveOAuthEndpoints(settings(), {
+      issuer: ISSUER,
+      authorization_endpoint: "https://real.example/authorize",
+    });
+    const md = buildOAuthMetadata(eff, {
+      grant_types_supported: ["authorization_code", "refresh_token", DEVICE_CODE],
+      scopes_supported: ["openid", "offline_access"],
+    });
+    expect(md.authorization_endpoint).toBe("https://real.example/authorize");
+    expect(md.grant_types_supported).toContain(DEVICE_CODE);
+    expect(md.scopes_supported).toEqual(["openid", "offline_access"]);
+  });
+
+  it("OAUTH_SCOPES_SUPPORTED beats discovery, so both documents agree", () => {
+    const md = buildOAuthMetadata(settings({ scopesSupported: ["api://x/mcp"] }), {
+      scopes_supported: ["openid", "offline_access"],
+    });
+    expect(md.scopes_supported).toEqual(["api://x/mcp"]);
   });
 
   it("issuer is never taken from the document", () => {
-    const md = buildOAuthMetadata(settings(), { ...discovered, issuer: "https://other" });
+    const md = buildOAuthMetadata(settings(), { issuer: "https://other" });
     expect(md.issuer).toBe(ISSUER);
   });
 
@@ -453,6 +582,7 @@ describe("buildOAuthMetadata with discovery", () => {
     const md = buildOAuthMetadata(settings());
     expect(md.authorization_endpoint).toBe(`${ISSUER}/oauth2/authorize`);
     expect(md.code_challenge_methods_supported).toEqual(["S256"]);
+    expect(md.grant_types_supported).toEqual(["authorization_code", "refresh_token"]);
     expect(md.scopes_supported).toEqual(["openid", "email", "profile"]);
   });
 });

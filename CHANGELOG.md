@@ -16,18 +16,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fact. This was the root cause behind the `registration_endpoint` bug fixed in 0.1.10.
 
   At startup the server now fetches the issuer's own metadata (RFC 8414, falling back to OIDC
-  discovery, three URL layouts tried in order) and advertises what it says. Precedence per field:
-  explicit env override, then the discovered document, then the derived default.
+  discovery, distinct URL layouts tried in order) and resolves each endpoint **once** —
+  explicit env override, then the discovered document, then the derived default. That single
+  resolved set drives **both** the advertised metadata **and** token verification, so what the
+  server tells clients (its `jwks_uri`, its endpoints) is exactly what it verifies against.
 
   Safety properties, each covered by a test:
-  - A document whose `issuer` does not match the configured issuer is **discarded**, not merged.
-    This document tells clients where to send users to authenticate, so accepting one that speaks
-    for a different issuer would be a redirect-hijack primitive.
+  - A document whose `issuer` does not match the configured issuer is **discarded**, not merged
+    (trailing-slash-insensitive). This document decides where clients authenticate and which keys
+    we verify against, so accepting one that speaks for a different issuer would be a
+    redirect-hijack / key-substitution primitive.
   - `issuer` is never taken from the document — it must match the `iss` claim byte-for-byte.
-  - Any failure (unreachable, timeout, non-JSON, 404) falls back to the previous derived defaults
-    and logs a warning. Discovery can improve the document but never prevent startup.
-  - Explicit overrides still win, including `OAUTH_REGISTRATION_ENDPOINT=none` — discovery cannot
-    silently re-advertise DCR that an operator turned off.
+  - Every discovered URL is validated (`https`, or `http` only on loopback) before it is
+    advertised or used; a downgraded or malformed value is ignored in favour of the derived
+    default. This matters most for `jwks_uri`, which now feeds signature verification.
+  - A successful discovery is authoritative about DCR: if it omits `registration_endpoint`, the
+    field is omitted — the derived guess is used only when discovery did not run or failed, so
+    the 0.1.10 fix cannot be silently undone.
+  - Any failure (unreachable, timeout, non-JSON, HTTP error) falls back to the derived defaults
+    and logs a warning; discovery can improve the document but never prevent startup. Total
+    discovery time is bounded (~5s) across all candidate URLs, not per URL.
+  - Explicit overrides still win, including `OAUTH_REGISTRATION_ENDPOINT=none`, `OAUTH_JWKS_URL`
+    and `OAUTH_USERINFO_URL`.
 
   Disable with `OAUTH_DISCOVERY=false`.
 

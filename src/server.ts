@@ -8,6 +8,7 @@ import {
   buildOAuthMetadata,
   createAccessTokenVerifier,
   discoverAuthorizationServerMetadata,
+  resolveOAuthEndpoints,
 } from "./oauth.js";
 import { registerTools } from "./tools/index.js";
 
@@ -104,14 +105,20 @@ if (config.auth.mode === "oauth") {
     : undefined;
   if (oauth.discovery) discoveryOutcome = discovered ? "ok" : "failed(using-defaults)";
 
+  // Resolve every endpoint ONCE (explicit override > discovered > derived) and use the
+  // result for BOTH the advertised metadata and the token verifier below — so what we
+  // tell clients (jwks_uri, endpoints) is exactly what we verify against, never a guess
+  // that diverges from the document we published.
+  const effective = resolveOAuthEndpoints(oauth, discovered);
+
   // Advertise the authorization server so MCP clients can discover and sign in.
   server.use(
     mcpAuthMetadataRouter({
-      oauthMetadata: buildOAuthMetadata(oauth, discovered),
+      oauthMetadata: buildOAuthMetadata(effective, discovered),
       resourceServerUrl: new URL(oauth.resource),
       // Undefined unless OAUTH_SCOPES_SUPPORTED is set, which keeps `scopes_supported`
       // out of the protected-resource document exactly as before (see advertisedScopes).
-      scopesSupported: advertisedScopes(oauth),
+      scopesSupported: advertisedScopes(effective),
     }),
   );
   // RFC 9728: the protected-resource metadata path is the well-known segment
@@ -121,7 +128,7 @@ if (config.auth.mode === "oauth") {
   server.use(
     "/mcp",
     requireBearerAuth({
-      verifier: { verifyAccessToken: createAccessTokenVerifier(oauth) },
+      verifier: { verifyAccessToken: createAccessTokenVerifier(effective) },
       resourceMetadataUrl: `${resUrl.origin}/.well-known/oauth-protected-resource${resPath}`,
     }),
   );
