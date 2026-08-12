@@ -1,6 +1,6 @@
 import express from "express";
 import { LexwareApiError } from "../lexware/errors.js";
-import { sanitizeFilename } from "./fetch-url.js";
+import { sanitizeFilename } from "./filename.js";
 import { uploadPageHtml } from "./page.js";
 import { TicketError, TicketStore, type TicketState } from "./tickets.js";
 
@@ -95,7 +95,16 @@ export function registerUploadRoutes(
       res.status(err.status).type("text/plain").send(err.message);
       return;
     }
-    res.type("text/html").send(uploadPageHtml(ticketParam(req)));
+    // Lock down the page response: it embeds the ticket (a bearer capability) in its HTML
+    // and URL. no-store keeps it out of any shared/proxy or browser disk cache; nosniff
+    // stops a client re-interpreting it as anything but the declared text/html; DENY
+    // framing refuses the page inside a cross-origin frame, where it has no business.
+    res
+      .type("text/html")
+      .set("Cache-Control", "no-store")
+      .set("X-Content-Type-Options", "nosniff")
+      .set("X-Frame-Options", "DENY")
+      .send(uploadPageHtml(ticketParam(req)));
   });
 
   app.post(
@@ -257,7 +266,7 @@ export function decodeFilenameB64(value: string): string | undefined {
  * Filename precedence, decided at exactly this line: sanitized `X-Filename-B64`
  * (see {@link decodeFilenameB64}) if it decodes, then sanitized `X-Filename`,
  * then the ticket's own fallback, then a fixed default. `sanitizeFilename`
- * (from fetch-url.ts, the same trust-boundary helper used for download links)
+ * (from filename.ts, the shared trust-boundary helper)
  * reduces to a basename — so a header like `../../../../etc/cron.d/evil.sh`
  * cannot escape the upload's own scope — and, importantly here, its return type
  * is `string | undefined`: it NEVER returns `""` (an empty or unsanitizable name

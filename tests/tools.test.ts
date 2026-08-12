@@ -61,10 +61,9 @@ const DRAFT_TOOLS = [
   "update-voucher",
   "upload-voucher-file",
   "upload-file",
-  // expansion: ticket-gated / URL-based upload, no base64 through the model context
+  // expansion: ticket-gated upload, no base64 through the model context
   "create-upload-ticket",
   "get-upload-result",
-  "upload-file-from-url",
 ];
 const FINALIZE_TOOLS = [
   "create-finalized-invoice",

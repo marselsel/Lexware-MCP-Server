@@ -42,7 +42,7 @@ const client = new LexwareClient({
 const server = new McpServer(
   {
     name: "lexware-office",
-    version: "0.1.10",
+    version: "0.1.11",
   },
   { capabilities: {} },
 );
@@ -109,9 +109,17 @@ if (bodyParsingConfigured) {
 // type-check (via `as unknown as`) but fail at runtime — McpServer has no `get`/
 // `post` methods to call.
 export const uploadTickets = new TicketStore();
-registerUploadRoutes(server.express, uploadTickets, async ({ bytes, filename, contentType, type }) =>
-  client.postMultipart<{ id: string }>("/v1/files", { bytes, filename, contentType }, { type }),
-);
+// The ticket-gated upload routes are a drafts-tier WRITE path (they push a file into the
+// Lexware file store), so mount them only when the drafts capability is enabled. Without
+// this, a read-only deployment (LEXWARE_READ_ONLY, or drafts explicitly off) would still
+// expose the unauthenticated POST /upload/:ticket route wired to Lexware's write API —
+// unreachable, since no ticket can be issued without the drafts-only create-upload-ticket
+// tool, but a write route has no business existing on a server configured not to write.
+if (config.capabilities.drafts) {
+  registerUploadRoutes(server.express, uploadTickets, async ({ bytes, filename, contentType, type }) =>
+    client.postMultipart<{ id: string }>("/v1/files", { bytes, filename, contentType }, { type }),
+  );
+}
 
 // publicBaseUrl is resolved in config.ts from OAUTH_RESOURCE/SERVER_URL, independently
 // of the auth mode — deriving it here from `config.auth` handed a static-token

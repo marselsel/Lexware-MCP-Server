@@ -53,7 +53,7 @@ export function registerTools(
     registerDocumentDraftTools(server, client);
     registerVoucherWriteTools(server, client);
     registerFileWriteTools(server, client);
-    registerUploadTools(server, client, uploadTickets, publicBaseUrl, config.uploadAllowedHosts);
+    registerUploadTools(server, uploadTickets, publicBaseUrl);
   }
 
   // Finalize / sensitive & irreversible tier (off by default).
