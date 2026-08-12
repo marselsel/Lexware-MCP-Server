@@ -136,9 +136,10 @@ if (!bodyParsingConfigured) {
   console.error(
     "[lexware-mcp] WARNING: could not raise the JSON body limit (Skybridge/Express internals changed) — " +
       "uploads over ~100 KB will be rejected. upload-file/upload-voucher-file may fail until this is fixed. " +
-      "The /upload/:ticket endpoints are ALSO affected: the global ~100 KB JSON parser stays in front of " +
-      "them instead of being skipped, so a ticket-gated upload over ~100 KB fails there too (routes.ts's " +
-      "own Buffer.isBuffer guard still prevents a silent empty upload, but the request itself will 400/413).",
+      "The /upload/:ticket endpoints are partially affected too: the global ~100 KB JSON parser stays in " +
+      "front of them instead of being skipped, so a JSON-content-typed ticket upload over ~100 KB fails " +
+      "there as well — other content types (PDFs, images) pass that parser untouched and still work up to " +
+      "the full limit (routes.ts's Buffer.isBuffer guard prevents a silent empty upload for the JSON case).",
   );
 }
 if (config.auth.mode === "oauth" && config.auth.allowedEmailDomains.length === 0) {

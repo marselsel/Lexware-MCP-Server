@@ -1,7 +1,7 @@
 import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { TicketState, TicketStore } from "../uploads/tickets.js";
-import { text, WRITE } from "./shared.js";
+import { LOCAL_RO, text, WRITE } from "./shared.js";
 
 /**
  * A media type safe to paste into a single-quoted shell argument: RFC 9110 token
@@ -33,16 +33,25 @@ const MEDIA_TYPE_RE = /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!
  *     receipt was filed as `application/octet-stream` — while curl still reported
  *     success with a file id.
  *
- * Without `filename`/`mimeType` the respective header is OMITTED entirely rather
- * than guessed. The server then falls back to the ticket's own values and finally
- * to `upload.bin` / `application/octet-stream` — the same outcome as before, but
- * without a foreign dependency and without a header that promises something false.
+ * Without `filename` the X-Filename-B64 header is OMITTED entirely rather than
+ * guessed; the server then falls back to the ticket's own value and finally to
+ * `upload.bin`. Content-Type is different: curl is never allowed to decide it.
+ * With a known, token-shaped mimeType the header carries it; otherwise the
+ * command pins `-H 'Content-Type:'` — curl's documented syntax for REMOVING an
+ * internally generated header — because `--data-binary` otherwise defaults to
+ * `Content-Type: application/x-www-form-urlencoded`, a truthy declared value that
+ * wins over the server's fallback chain (see resolveContentType) and filed every
+ * headerless upload under a false type. With the header stripped, nothing is
+ * declared and the server's ticket-mimeType / `application/octet-stream` fallback
+ * actually decides, as designed.
  */
 export function buildCurlCommand(uploadUrl: string, file: { filename?: string; mimeType?: string } = {}): string {
   const headers: string[] = [];
   const mimeType = file.mimeType?.trim();
   if (mimeType && MEDIA_TYPE_RE.test(mimeType)) {
     headers.push(` -H 'Content-Type: ${mimeType}'`);
+  } else {
+    headers.push(` -H 'Content-Type:'`);
   }
   const filename = file.filename?.trim();
   if (filename) {
@@ -131,7 +140,11 @@ export function registerUploadTools(
         "Read the Lexware file id produced by an upload ticket. Use after a browser drag-and-drop; the curl " +
         "path already prints the id itself. Returns pending=true while nothing has been uploaded yet.",
       inputSchema: { ticket: z.string().describe("The ticket from create-upload-ticket.") },
-      annotations: WRITE,
+      // LOCAL_RO, not WRITE: the handler only reads the in-memory store (peek), and
+      // this tool is DESIGNED to be polled after a browser upload — a WRITE hint made
+      // approval-prompting clients confirm every poll iteration, and a client
+      // enforcing a read-only policy blocked the one tool that retrieves the fileId.
+      annotations: LOCAL_RO,
     },
     async ({ ticket }: { ticket: string }) => {
       const state = store.peek(ticket);

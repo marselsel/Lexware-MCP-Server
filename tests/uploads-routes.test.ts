@@ -1,7 +1,13 @@
 import express from "express";
+import { execFile, execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { LexwareApiError } from "../src/lexware/errors.js";
+import { buildTicketResponse } from "../src/tools/uploads.js";
 import { deferBodyParsingFor, isUploadPath } from "../src/server-body-parsing.js";
 import { TicketStore } from "../src/uploads/tickets.js";
 import { FILENAME_B64_SOURCE, uploadPageHtml } from "../src/uploads/page.js";
@@ -92,9 +98,15 @@ describe("upload routes", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ fileId: "file-123", filename: "beleg.pdf", byteLength: 4 });
-    expect(uploaded).toEqual([
-      { bytes: new Uint8Array([37, 80, 68, 70]), filename: "beleg.pdf", contentType: "application/pdf", type: "voucher" },
-    ]);
+    // The body buffer is forwarded AS-IS (a Buffer is a Uint8Array; the multipart
+    // sink copies it into a Blob anyway) — so assert the CONTENT, not the concrete
+    // constructor, which is deliberately Buffer rather than a defensive copy.
+    const call = uploaded[0] as { bytes: Uint8Array; filename: string; contentType: string; type: string };
+    expect(call.bytes).toBeInstanceOf(Uint8Array);
+    expect(Array.from(call.bytes)).toEqual([37, 80, 68, 70]);
+    expect(call.filename).toBe("beleg.pdf");
+    expect(call.contentType).toBe("application/pdf");
+    expect(call.type).toBe("voucher");
     await s.close();
   });
 
@@ -197,7 +209,7 @@ describe("upload routes", () => {
     // silently produced a 0-byte "successful" upload for exactly this request.
     expect(body.byteLength).toBe(Buffer.byteLength(payload));
     expect(uploaded).toHaveLength(1);
-    expect((uploaded[0] as { bytes: Uint8Array }).bytes).toEqual(new Uint8Array(Buffer.from(payload)));
+    expect(Array.from((uploaded[0] as { bytes: Uint8Array }).bytes)).toEqual(Array.from(Buffer.from(payload)));
     await s.close();
   });
 
@@ -416,6 +428,113 @@ describe("upload routes", () => {
     const firstRes = await first;
     expect(firstRes.status).toBe(200);
     expect((await firstRes.json()).fileId).toBe("file-first");
+    await s.close();
+  });
+
+  // --- One buffering body per ticket at a time ----------------------------------
+
+  it("answers 429 to a second POST while the first is still STREAMING its body (pre-claim window)", async () => {
+    // This is the window claim() cannot cover: claim runs only after express.raw
+    // has buffered the whole body, so without the body-read slot N simultaneous
+    // POSTs on one valid ticket each buffered up to maxBytes before N−1 lost the
+    // race — unbounded memory amplification from a single leaked ticket URL.
+    const store = new TicketStore();
+    const t = store.create({ type: "voucher" });
+    const app = makeApp(store);
+    const s = await listen(app);
+
+    // First request: a streamed body that stalls after its first chunk, holding
+    // the slot open mid-buffer.
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseFirst = r;
+    });
+    const stalledBody = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        await gate;
+        controller.enqueue(new Uint8Array([4]));
+        controller.close();
+      },
+    });
+    const first = fetch(`${s.url}/upload/${t.ticket}`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf" },
+      body: stalledBody,
+      // Node's fetch requires the half-duplex opt-in for streamed request bodies.
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    // Give the first request time to pass the pre-checks and reach express.raw.
+    await new Promise((r) => setTimeout(r, 150));
+
+    const second = await fetch(`${s.url}/upload/${t.ticket}`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf" },
+      body: new Uint8Array([9]),
+    });
+    expect(second.status).toBe(429);
+
+    releaseFirst();
+    const firstRes = await first;
+    expect(firstRes.status).toBe(200);
+
+    // NOTE: this 410 comes from requireClaimableTicket, which runs BEFORE the
+    // slot check — it proves the ticket was consumed, not that the slot was
+    // freed. Slot release is proven elsewhere: the sequential-retry tests cover
+    // the finished-response path, and the abort test below drives the
+    // premature-termination path.
+    const third = await fetch(`${s.url}/upload/${t.ticket}`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf" },
+      body: new Uint8Array([9]),
+    });
+    expect(third.status).toBe(410);
+    await s.close();
+  });
+
+  it("releases the body-read slot when the client ABORTS mid-stream, so the ticket is not 429-locked", async () => {
+    // The slot is released on response 'close', which fires on premature
+    // termination too — not only on a finished response. If that hook ever
+    // regressed to 'finish' (which does NOT fire on abort), an aborted upload
+    // would keep the slot for a still-valid ticket and every retry would answer
+    // 429 until the socket timeout. This test drives exactly the abort path.
+    const store = new TicketStore();
+    const t = store.create({ type: "voucher" });
+    const app = makeApp(store);
+    const s = await listen(app);
+
+    const aborter = new AbortController();
+    const neverEnding = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3])); // then stall forever
+      },
+    });
+    const aborted = fetch(`${s.url}/upload/${t.ticket}`, {
+      method: "POST",
+      headers: { "content-type": "application/pdf" },
+      body: neverEnding,
+      duplex: "half",
+      signal: aborter.signal,
+    } as RequestInit & { duplex: "half" }).catch((e) => e);
+    await new Promise((r) => setTimeout(r, 150)); // let it reach the slot middleware
+    aborter.abort();
+    await aborted; // fetch rejects; the server sees the connection die
+
+    // 'close' propagates asynchronously — poll briefly rather than guessing one
+    // magic delay. The retry must stop answering 429 once the slot frees, and
+    // must then SUCCEED: the aborted request never completed its body, so claim()
+    // never ran and the ticket is still unconsumed.
+    let retryStatus = 429;
+    for (let i = 0; i < 40 && retryStatus === 429; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const retry = await fetch(`${s.url}/upload/${t.ticket}`, {
+        method: "POST",
+        headers: { "content-type": "application/pdf" },
+        body: new Uint8Array([9]),
+      });
+      retryStatus = retry.status;
+    }
+    expect(retryStatus).toBe(200);
     await s.close();
   });
 
@@ -667,10 +786,13 @@ describe("upload error mapping", () => {
     await s.close();
   });
 
-  it("keeps 502 for a transport failure reaching Lexware (status 0)", async () => {
+  it("keeps 502 for a transport failure reaching Lexware (status 0) and names the duplicate risk", async () => {
     // A LexwareApiError with status 0 means the request never got an HTTP answer.
     // That IS a gateway problem and must stay 502 — status 0 is also not a value
-    // res.status() could send.
+    // res.status() could send. And because the POST is non-idempotent and not
+    // retried, the upload MAY have landed anyway; the ticket is released for a
+    // retry, so the message must say the outcome is unknown — a blind re-run can
+    // file the receipt twice.
     const store = new TicketStore();
     const t = store.create({ type: "voucher" });
     const app = makeFailingApp(store, new LexwareApiError(0, "Lexware API request failed: connect ECONNREFUSED"));
@@ -681,7 +803,35 @@ describe("upload error mapping", () => {
       body: new Uint8Array([1]),
     });
     expect(res.status).toBe(502);
+    expect((await res.json()).error).toMatch(/may or may not have reached/i);
+    expect(store.peek(t.ticket)?.inFlight).toBe(false); // released — a retry stays possible
     await s.close();
+  });
+
+  it("answers a Lexware auth failure (the OPERATOR's API key rejected) as a generic 502, never the upstream status", async () => {
+    for (const status of [401, 403]) {
+      // Forwarding these verbatim tells an unauthenticated ticket holder
+      // "unauthorized" on a route that has no caller auth at all, and hands
+      // Lexware's own error wording to strangers. It is a server configuration
+      // problem, so it belongs in the 502 bucket with a fixed message.
+      const store = new TicketStore();
+      const t = store.create({ type: "voucher" });
+      const app = makeFailingApp(store, new LexwareApiError(status, `Lexware API ${status}: invalid or expired token`));
+      const s = await listen(app);
+      const res = await fetch(`${s.url}/upload/${t.ticket}`, {
+        method: "POST",
+        headers: { "content-type": "application/pdf", "x-filename": "a.pdf" },
+        body: new Uint8Array([1]),
+      });
+      expect(res.status, String(status)).toBe(502);
+      const body = await res.json();
+      expect(body.error).not.toContain(String(status));
+      expect(body.error).not.toContain("invalid or expired token");
+      expect(body.error).toMatch(/server configuration|operator/i);
+      // Released: once the operator fixes the key, the same ticket still works.
+      expect(store.peek(t.ticket)?.inFlight).toBe(false);
+      await s.close();
+    }
   });
 
   it("keeps 502 for a non-Lexware error", async () => {
@@ -898,4 +1048,55 @@ describe("X-Filename-B64", () => {
     // The old line `"X-Filename": file.name` is what threw in the browser.
     expect(html).not.toContain('"X-Filename": file.name');
   });
+});
+
+// --- The emitted curl command, run for real --------------------------------------
+
+const hasCurl = (() => {
+  try {
+    execFileSync("sh", ["-c", "command -v curl"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe("the emitted curl command, executed against the real routes", () => {
+  it.skipIf(!hasCurl)(
+    "never lets curl invent the Content-Type: the server's fallback decides, not application/x-www-form-urlencoded",
+    async () => {
+      // The exact precondition of the bug: the model passed no mimeType, so the
+      // ticket carries none and the command has no valued Content-Type header.
+      // Measured before the fix: curl's --data-binary default then declared
+      // 'application/x-www-form-urlencoded' — a truthy value that won in
+      // resolveContentType, so the documented ticket-mimeType/octet-stream
+      // fallback chain was dead code for every headerless curl upload.
+      const store = new TicketStore();
+      const uploaded: unknown[] = [];
+      const t = store.create({ type: "voucher" });
+      const app = makeApp(store, uploaded);
+      const s = await listen(app);
+      const { curlCommand } = buildTicketResponse(t, s.url);
+      const dir = mkdtempSync(path.join(tmpdir(), "lexware-curl-"));
+      const file = path.join(dir, "beleg.pdf");
+      writeFileSync(file, Buffer.from([37, 80, 68, 70]));
+      try {
+        // Exactly the edit a user is told to make: replace the FILE path, run it.
+        // ASYNC exec, not execFileSync: curl talks to a server living in THIS
+        // process — a sync child-process wait freezes the event loop and deadlocks
+        // the test against its own server.
+        const { stdout: out } = await promisify(execFile)("sh", ["-c", curlCommand.replace("/path/to/file.pdf", file)], {
+          encoding: "utf8",
+        });
+        expect(JSON.parse(out).fileId).toBe("file-123"); // curl prints the server's JSON
+        const call = uploaded[0] as { contentType: string; filename: string };
+        expect(call.contentType).toBe("application/octet-stream");
+        expect(call.contentType).not.toBe("application/x-www-form-urlencoded");
+        expect(call.filename).toBe("upload.bin"); // no name known anywhere → the fixed default
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+        await s.close();
+      }
+    },
+  );
 });

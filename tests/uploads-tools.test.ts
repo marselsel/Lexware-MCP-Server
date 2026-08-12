@@ -1,7 +1,9 @@
+import type { McpServer } from "skybridge/server";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { buildCurlCommand, buildTicketResponse } from "../src/tools/uploads.js";
+import { buildCurlCommand, buildTicketResponse, registerUploadTools } from "../src/tools/uploads.js";
+import { TicketStore } from "../src/uploads/tickets.js";
 
 const URL_ = "https://mcp.example.com/lexware/upload/abc123";
 
@@ -120,20 +122,26 @@ describe("buildCurlCommand", () => {
     expect(full).not.toContain("`");
   });
 
-  it("omits a header entirely rather than guessing when the value is unknown", () => {
+  it("omits the filename header when unknown, but ALWAYS pins Content-Type (real value or explicit unset)", () => {
     const nameOnly = buildCurlCommand(URL_, { filename: "beleg.pdf" });
     expect(headerValue(nameOnly, "X-Filename-B64")).toBeDefined();
-    expect(nameOnly).not.toContain("Content-Type");
+    // No VALUED Content-Type — but the unset form must be present (see below).
+    expect(nameOnly).not.toMatch(/Content-Type: \S/);
+    expect(nameOnly).toContain("-H 'Content-Type:'");
 
     const typeOnly = buildCurlCommand(URL_, { mimeType: "image/jpeg" });
     expect(headerValue(typeOnly, "Content-Type")).toBe("image/jpeg");
     expect(typeOnly).not.toContain("X-Filename-B64");
 
-    // Neither known: a bare command. The server falls back to the ticket values and
-    // finally to upload.bin / application/octet-stream — no false promise in between.
+    // Neither known: the command still pins `-H 'Content-Type:'` — curl's syntax for
+    // REMOVING an internally generated header. Measured: without it, --data-binary
+    // silently declares 'application/x-www-form-urlencoded', a truthy value that wins
+    // over the server's fallback chain and files every headerless upload under a
+    // false type. With the header stripped, nothing is declared and the server's
+    // ticket-mimeType / application/octet-stream fallback actually decides.
     const bare = buildCurlCommand(URL_);
-    expect(bare).not.toContain("-H ");
-    expect(bare).toBe(`FILE='/path/to/file.pdf'; curl -sS -X POST '${URL_}' --data-binary @"$FILE"`);
+    expect(bare).toBe(`FILE='/path/to/file.pdf'; curl -sS -X POST '${URL_}' -H 'Content-Type:' --data-binary @"$FILE"`);
+    expect(headerValue(bare, "Content-Type")).toBeUndefined(); // unset form carries no value
   });
 
   it("leaves exactly ONE spot to replace: the FILE= path", () => {
@@ -169,19 +177,44 @@ describe("buildCurlCommand", () => {
   it("refuses a mimeType that could break out of its single quotes", () => {
     // The value comes from the model and the result is a command a human is told
     // to run. A quote in it must not end up in the command line at all — dropping
-    // the header is the safe outcome, the server's fallback still applies.
+    // to the fixed unset form is the safe outcome, the server's fallback applies.
     const hostile = buildCurlCommand(URL_, { mimeType: "application/pdf'; rm -rf ~; echo '" });
     expect(hostile).not.toContain("rm -rf");
-    expect(hostile).not.toContain("Content-Type");
-    expect(hostile).toBe(`FILE='/path/to/file.pdf'; curl -sS -X POST '${URL_}' --data-binary @"$FILE"`);
+    expect(hostile).not.toMatch(/Content-Type: \S/); // nothing of the hostile value survives
+    expect(hostile).toBe(`FILE='/path/to/file.pdf'; curl -sS -X POST '${URL_}' -H 'Content-Type:' --data-binary @"$FILE"`);
     // A legitimate type with parameters is not a bare token either — dropped, not mangled.
-    expect(buildCurlCommand(URL_, { mimeType: "text/plain; charset=utf-8" })).not.toContain("Content-Type");
+    expect(buildCurlCommand(URL_, { mimeType: "text/plain; charset=utf-8" })).not.toMatch(/Content-Type: \S/);
     // Ordinary types still pass.
     expect(headerValue(buildCurlCommand(URL_, { mimeType: "image/jpeg" }), "Content-Type")).toBe("image/jpeg");
   });
 
   it("treats a blank filename or mimeType as absent", () => {
     const blank = buildCurlCommand(URL_, { filename: "   ", mimeType: "  " });
-    expect(blank).not.toContain("-H ");
+    expect(blank).not.toContain("X-Filename-B64");
+    expect(blank).not.toMatch(/Content-Type: \S/);
+    expect(blank).toContain("-H 'Content-Type:'"); // absent type still pins the unset form
+  });
+});
+
+// --- Tool annotations -------------------------------------------------------------
+
+describe("upload tool annotations", () => {
+  it("marks get-upload-result as a local read; create-upload-ticket stays a write", () => {
+    const defs: { name: string; annotations: Record<string, boolean> }[] = [];
+    const fake = {
+      registerTool(def: { name: string; annotations: Record<string, boolean> }) {
+        defs.push(def);
+        return fake;
+      },
+    } as unknown as McpServer;
+    registerUploadTools(fake, new TicketStore(), "https://mcp.example.test");
+    const byName = Object.fromEntries(defs.map((d) => [d.name, d.annotations]));
+    // get-upload-result only peeks the in-memory store, and it is DESIGNED to be
+    // polled after a browser upload — a WRITE hint made approval-prompting clients
+    // confirm every poll iteration, and a client enforcing a read-only policy
+    // blocked the one tool that retrieves the fileId.
+    expect(byName["get-upload-result"]).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+    // Issuing a ticket arms an (unauthenticated, single-use) write path: WRITE.
+    expect(byName["create-upload-ticket"]).toMatchObject({ readOnlyHint: false });
   });
 });

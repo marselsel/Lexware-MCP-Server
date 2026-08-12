@@ -196,7 +196,16 @@ function resolvePublicBaseUrl(env: NodeJS.ProcessEnv, port: number): string {
   if (resource) return normalizeUrl(resource, resource, "OAUTH_RESOURCE");
   const serverUrl = env.SERVER_URL?.trim();
   if (serverUrl) return normalizeUrl(serverUrl, serverUrl, "SERVER_URL");
-  return `http://127.0.0.1:${port}`;
+  // The loopback fallback must name the port the server actually LISTENS on.
+  // Under `skybridge dev` that is `__PORT` — skybridge picks it itself (~3000)
+  // and plain PORT is never consulted; using `port` (default 8080) there handed
+  // out links refusing connections on the very machine the fallback exists for.
+  // `npm start` is unaffected: server.ts copies config.port into __PORT only
+  // AFTER config is loaded, so __PORT is present here only when something else
+  // (skybridge dev, or an operator) chose the bound port explicitly.
+  const bound = env.__PORT?.trim();
+  const boundPort = bound && /^\d+$/.test(bound) ? Number(bound) : NaN;
+  return `http://127.0.0.1:${boundPort >= 1 && boundPort <= 65535 ? boundPort : port}`;
 }
 
 /** Resolve how `/mcp` is authenticated, failing closed if nothing is configured. */
@@ -335,6 +344,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     warnings.push(
       "LEXWARE_ENABLE_DRAFTS=false was overridden to true because LEXWARE_ENABLE_FINALIZE=true — the " +
         "finalize tier issues binding versions of draft documents and cannot run without the drafts tier.",
+    );
+  }
+  // Outside OAuth mode, OAUTH_RESOURCE has exactly one remaining effect — it wins
+  // over SERVER_URL as the base for upload links (resolvePublicBaseUrl). That is
+  // easy to hit by accident: migrate from OAuth to a static token, remove
+  // OAUTH_ISSUER, update SERVER_URL — and a stale OAUTH_RESOURCE left in the
+  // environment silently keeps every ticket link pointing at the old host, with
+  // nothing anywhere saying why. Say so at startup.
+  if (auth.mode !== "oauth" && env.OAUTH_RESOURCE?.trim()) {
+    warnings.push(
+      "OAUTH_RESOURCE is set but OAuth mode is not enabled (no OAUTH_ISSUER). It still takes precedence " +
+        "over SERVER_URL when building upload links — if that is stale, links point at the wrong host. " +
+        "Unset OAUTH_RESOURCE or use SERVER_URL alone outside OAuth mode.",
     );
   }
 

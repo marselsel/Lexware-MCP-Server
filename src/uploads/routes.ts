@@ -79,6 +79,30 @@ function requireClaimableTicket(store: TicketStore): express.RequestHandler {
 }
 
 /**
+ * Bounds concurrent body buffering to ONE in-progress request per ticket, closing
+ * the gap the non-claiming pre-check leaves open: `claim()` runs only AFTER
+ * `express.raw()` has buffered the whole body, so N simultaneous POSTs naming the
+ * same valid ticket all passed `requireClaimableTicket` and each buffered up to
+ * `maxBytes` before N−1 lost the claim race — unbounded memory amplification from
+ * a single leaked ticket URL. This is NOT the single-use lock (`claim()` stays
+ * that); the slot is released when the RESPONSE closes — success, failure, or
+ * client abort, `close` fires in every case — so a failed attempt frees it for a
+ * sequential retry and it can never be stranded. 429, not 410: the losing request
+ * did nothing wrong and may legitimately retry once the winner resolves.
+ */
+function limitConcurrentBodyReads(store: TicketStore): express.RequestHandler {
+  return (req, res, next) => {
+    const ticket = ticketParam(req);
+    if (!store.beginBodyRead(ticket)) {
+      res.status(429).json({ error: "Another upload with this ticket is already in progress." });
+      return;
+    }
+    res.once("close", () => store.endBodyRead(ticket));
+    next();
+  };
+}
+
+/**
  * Ticket-gated upload endpoints. These sit OUTSIDE the OAuth gate on purpose —
  * the single-use, short-lived ticket is the credential, so a browser or a plain
  * curl can post bytes without holding a long-lived secret.
@@ -112,6 +136,9 @@ export function registerUploadRoutes(
     // Cheap, non-claiming rejection for a bad ticket — must run before the body
     // is ever touched. See requireClaimableTicket's doc comment.
     requireClaimableTicket(store),
+    // One buffering body per ticket at a time — must also run before the body is
+    // read. See limitConcurrentBodyReads' doc comment.
+    limitConcurrentBodyReads(store),
     // `inflate: false`: refuse to transparently gunzip the body. Without this, a
     // `Content-Encoding: gzip` request lets an attacker trade a small wire-size
     // body for a much larger buffered one (measured amplification: ~1000x) before
@@ -142,8 +169,11 @@ export function registerUploadRoutes(
 
         const filename = resolveFilename(req, state);
         const contentType = resolveContentType(req, state);
+        // `bytes` is passed as-is: a Buffer IS a Uint8Array, and the multipart
+        // sink copies it into a Blob anyway — a defensive `new Uint8Array(bytes)`
+        // here just held a third full-size copy of a 20 MB upload for nothing.
         const created = await upload({
-          bytes: new Uint8Array(bytes),
+          bytes,
           filename,
           contentType,
           type: state.type,
@@ -157,16 +187,40 @@ export function registerUploadRoutes(
           res.status(err.status).json({ error: err.message });
           return;
         }
+        // EXCEPT auth failures: a 401/403 from Lexware means the OPERATOR's API
+        // key was rejected, not anything the ticket holder did. Forwarding it
+        // verbatim answers "unauthorized" on a route that has no caller auth at
+        // all, and hands Lexware's own error wording to an unauthenticated
+        // audience. It is a server configuration problem — fixed message, 502.
+        if (err instanceof LexwareApiError && err.kind === "auth") {
+          res.status(502).json({
+            error:
+              "Upload failed: the server could not authenticate with Lexware Office. " +
+              "This is a server configuration problem — contact the operator.",
+          });
+          return;
+        }
         // A rejection BY Lexware is not a failure OF this server. Forwarding its
         // status verbatim keeps a refused file type (406) or a rejected size (413)
         // out of the 502 bucket, which the operator's runbook reads as "container
         // is down" — sending them hunting for an outage that never happened. The
         // message already carries Lexware's own wording (see describeErrorBody).
-        // `status === 0` means a network/transport failure reaching Lexware — that
-        // IS an upstream-gateway problem and correctly stays 502, as does anything
-        // outside the valid HTTP error range (res.status would otherwise throw).
         if (err instanceof LexwareApiError && err.status >= 400 && err.status < 600) {
           res.status(err.status).json({ error: err.message });
+          return;
+        }
+        // `status === 0` means a network/transport failure reaching Lexware: the
+        // POST is deliberately not retried by the client (non-idempotent), so the
+        // upload MAY have landed even though no answer came back. The ticket was
+        // released above (retries must stay possible), which means a blind re-run
+        // CAN file the receipt twice — say so, instead of leaving the caller to
+        // guess. Anything else non-HTTP stays a plain 502.
+        if (err instanceof LexwareApiError && err.status === 0) {
+          res.status(502).json({
+            error:
+              `${err.message} The upload may or may not have reached Lexware — ` +
+              "check whether the file already exists before retrying, or it can be filed twice.",
+          });
           return;
         }
         res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
