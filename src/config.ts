@@ -5,8 +5,6 @@
  * any Skybridge/Express imports so it can be unit-tested in isolation.
  */
 
-import { DEFAULT_ALLOWED_HOSTS } from "./uploads/fetch-url.js";
-
 /** Minimum length for `MCP_AUTH_TOKEN`. A 32-hex-char token is 32 chars. */
 export const MIN_TOKEN_LENGTH = 16;
 
@@ -100,13 +98,6 @@ export interface Config {
    * that resolves nowhere but inside the container.
    */
   publicBaseUrl: string;
-  /**
-   * Hosts `upload-file-from-url` may download from (the host itself or any subdomain).
-   * Defaults to {@link DEFAULT_ALLOWED_HOSTS}; `LEXWARE_UPLOAD_ALLOWED_HOSTS` REPLACES
-   * that list rather than extending it, so the defaults can be opted out of. An empty
-   * list blocks every host — fail closed, never "allow all".
-   */
-  uploadAllowedHosts: string[];
   port: number;
   debugLogging: boolean;
   capabilities: Capabilities;
@@ -117,26 +108,6 @@ export interface Config {
 const DEFAULT_BASE_URL = "https://api.lexware.io";
 const DEFAULT_APP_BASE_URL = "https://app.lexware.de";
 const DEFAULT_PORT = 8080;
-
-/**
- * Resolve the URL-upload host allow-list.
- *
- * Unset (the variable absent entirely) keeps {@link DEFAULT_ALLOWED_HOSTS}. Any other
- * value REPLACES the defaults — extending them would make Microsoft's domains
- * impossible to opt out of, which is the wrong default for a self-hosted server.
- *
- * An explicitly empty value therefore yields an empty list, which blocks every host and
- * disables `upload-file-from-url` entirely. That is deliberate: an allow-list that
- * cannot be emptied cannot be used to turn the feature off, and "empty means allow
- * everything" would turn a typo into an open SSRF surface.
- */
-function resolveUploadAllowedHosts(raw: string | undefined): string[] {
-  if (raw === undefined) return DEFAULT_ALLOWED_HOSTS;
-  return raw
-    .split(",")
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean);
-}
 
 /** Parse a boolean env value. Accepts true/1/yes/on (case-insensitive). */
 function parseBool(raw: string | undefined, fallback: boolean): boolean {
@@ -377,7 +348,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     auth,
     publicBaseUrl: resolvePublicBaseUrl(env, port),
-    uploadAllowedHosts: resolveUploadAllowedHosts(env.LEXWARE_UPLOAD_ALLOWED_HOSTS),
     port,
     debugLogging: parseBool(env.LEXWARE_DEBUG_LOGGING, false),
     capabilities: { read: true, drafts: enableDrafts, finalize: enableFinalize },

@@ -4,6 +4,53 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11]
+
+Upload a receipt without pushing its bytes through the model context. Based on the
+contribution by [@gutencoder](https://github.com/gutencoder) ([#34]); the server-side
+URL-fetch tool from that PR was intentionally held back (see **Security** below).
+
+### Added
+- **`create-upload-ticket` / `get-upload-result` (drafts tier).** The existing `upload-file` /
+  `upload-voucher-file` tools take the file as base64 inline in the JSON-RPC body, so every byte is
+  billed as tokens, sits in the conversation transcript, and a ~8 MB receipt runs into the 12 MB body
+  limit — the file travels through the model even though the model only needs the resulting file id.
+  `create-upload-ticket` issues a short-lived (15 min), single-use ticket and returns a browser URL for
+  drag-and-drop plus a ready-to-run `curl` command; the bytes go client → server → Lexware and the
+  model only ever sees the file id. `get-upload-result` reads that id back after a browser upload (the
+  `curl` path prints it directly). `filename` / `mimeType` travel as `X-Filename-B64` (base64url of the
+  UTF-8 bytes), so names with an en dash, typographic quotes or an emoji survive a header layer that is
+  Latin-1 on the wire.
+- **`SERVER_URL` (or `OAUTH_RESOURCE`) now applies in every auth mode**, not only OAuth. It is the
+  server's public URL, and `create-upload-ticket` builds its browser link and `curl` command from it;
+  a static-token deployment behind a real domain previously had it ignored and handed out loopback
+  links. Unset, the loopback fallback still applies, now on the configured `PORT`.
+
+### Changed
+- The existing base64 upload tools are unchanged and remain available — the ticket route is additive.
+- **Body parsing now also defers `/upload` paths** from the pre-applied global JSON parser, alongside
+  `/mcp`: the upload route reads the raw body itself, and letting the JSON parser run first turned a
+  JSON-content-typed upload into an empty file. The route additionally rejects gzip framing
+  (`inflate: false`), rejects an invalid/expired/used ticket before reading any body, and holds a
+  synchronous single-use lock across the upload so a retried or duplicated request cannot file a second
+  voucher.
+
+The ticket store is **in-process**, so this is a single-instance feature: a restart drops open tickets
+(they answer `410`, they do not hang), and behind a load balancer without sticky sessions an upload can
+reach a different instance than the one that issued the ticket. The 15-minute lifetime bounds the
+window. The upload route is mounted **only when the drafts capability is enabled** — a read-only
+deployment never exposes it — and the ticket page is served `Cache-Control: no-store`.
+
+### Security
+- **The server-side URL-fetch tool (`upload-file-from-url`) from #34 was deliberately NOT included.**
+  A server-side fetcher is SSRF surface by construction; the version in #34 is guarded by a host
+  allow-list and per-hop private-address checks but carries a DNS-rebinding TOCTOU — the resolved
+  address is validated, then the connection re-resolves independently — which is moot for the built-in
+  Microsoft defaults but live for any custom allow-list. It will be reconsidered separately, with
+  connection-level IP pinning and disabled by default. The ticket flow above carries no such surface.
+
+[#34]: https://github.com/marselsel/lexware-mcp/pull/34
+
 ## [0.1.10]
 
 ### Fixed

@@ -1,7 +1,5 @@
 import type { McpServer } from "skybridge/server";
 import { z } from "zod";
-import type { LexwareClient } from "../lexware/client.js";
-import { DEFAULT_ALLOWED_HOSTS, fetchRemoteFile } from "../uploads/fetch-url.js";
 import type { TicketState, TicketStore } from "../uploads/tickets.js";
 import { text, WRITE } from "./shared.js";
 
@@ -79,11 +77,8 @@ export function buildTicketResponse(
 
 export function registerUploadTools(
   server: McpServer,
-  client: LexwareClient,
   store: TicketStore,
   publicBaseUrl: string,
-  /** Hosts `upload-file-from-url` may download from (see Config.uploadAllowedHosts). */
-  allowedHosts: string[] = DEFAULT_ALLOWED_HOSTS,
 ): void {
   server.registerTool(
     {
@@ -155,42 +150,6 @@ export function registerUploadTools(
       return {
         structuredContent: { pending: false, ...state.result },
         content: text(`Uploaded file ${state.result.fileId} (${state.result.filename}, ${state.result.byteLength} bytes).`),
-      };
-    },
-  );
-
-  server.registerTool(
-    {
-      name: "upload-file-from-url",
-      description:
-        "Download a file from a pre-authenticated download link and store it in Lexware, without the bytes " +
-        "passing through the model context — e.g. a share link to a file in cloud storage. Only https URLs " +
-        "on a host in the server's allow-list are accepted (the host itself or a subdomain), re-checked " +
-        "after every redirect; arbitrary URLs are refused by design. The operator configures the list via " +
-        "LEXWARE_UPLOAD_ALLOWED_HOSTS; it defaults to sharepoint.com, onedrive.live.com, 1drv.ms and " +
-        "graph.microsoft.com. If a URL is refused, the error names the host — do not retry other hosts. " +
-        "Limit 20 MB.",
-      inputSchema: {
-        url: z
-          .string()
-          .describe("Public https URL of the file. Must be on the server's configured host allow-list."),
-        filename: z.string().optional().describe("Overrides the name derived from the response."),
-        mimeType: z.string().optional().describe("Overrides the content type from the response."),
-        type: z.string().default("voucher").describe('Lexware file category. "voucher" for bookkeeping receipts.'),
-      },
-      annotations: WRITE,
-    },
-    async ({ url, filename, mimeType, type }: { url: string; filename?: string; mimeType?: string; type: string }) => {
-      const fetched = await fetchRemoteFile(url, { allowedHosts });
-      const name = filename ?? fetched.filename ?? new URL(url).pathname.split("/").pop() ?? "download.bin";
-      const created = await client.postMultipart<{ id: string }>(
-        "/v1/files",
-        { bytes: fetched.bytes, filename: name, contentType: mimeType ?? fetched.contentType },
-        { type },
-      );
-      return {
-        structuredContent: { fileId: created.id, filename: name, byteLength: fetched.bytes.byteLength },
-        content: text(`Uploaded file ${created.id} (${name}, ${fetched.bytes.byteLength} bytes) from ${url}.`),
       };
     },
   );
