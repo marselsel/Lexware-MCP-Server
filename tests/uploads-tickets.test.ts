@@ -130,4 +130,67 @@ describe("TicketStore", () => {
     store.release(t.ticket);
     expect(() => store.claim(t.ticket)).toThrow(TicketError);
   });
+
+  // --- complete() re-arms the TTL: the result outlives the CREATION clock --------
+
+  it("keeps the result readable for a full TTL after COMPLETION, not after creation", () => {
+    // The bug this pins down: an upload dropped onto the page at minute 14 left
+    // get-upload-result a sub-minute window before the creation-time expiry evicted
+    // the entry — the model was told "unknown or expired, issue a new one" for an
+    // upload that SUCCEEDED, and the user filed the same receipt twice.
+    let now = 0;
+    const store = new TicketStore(60_000, () => now);
+    const t = store.create({ type: "voucher" }); // creation clock runs out at 60_000
+    now = 59_000; // upload lands just before that
+    store.claim(t.ticket);
+    store.complete(t.ticket, { fileId: "f1", filename: "x.pdf", byteLength: 3 });
+    now = 100_000; // creation clock long past — the result must still be readable
+    expect(store.peek(t.ticket)?.result?.fileId).toBe("f1");
+    now = 119_001; // one full TTL after completion (59_000 + 60_000) — now it may go
+    expect(store.peek(t.ticket)).toBeUndefined();
+  });
+
+  it("never expiry-evicts an IN-FLIGHT entry: a racing claim reads 'already used' and the result survives", () => {
+    let now = 0;
+    const store = new TicketStore(60_000, () => now);
+    const t = store.create({ type: "voucher" });
+    now = 59_999;
+    store.claim(t.ticket); // the upload starts just before expiry…
+    now = 61_000; // …and its Lexware call is still running past it
+    // A second request racing the same ticket must NOT delete the in-flight entry —
+    // that would orphan the first request's complete() (result silently lost even
+    // though Lexware filed the receipt). It reads "already used", not "expired".
+    expect(() => store.claim(t.ticket)).toThrow(/already used/);
+    // get-upload-result during that window reads "pending", never "expired".
+    expect(store.peek(t.ticket)?.inFlight).toBe(true);
+    expect(store.peek(t.ticket)?.result).toBeUndefined();
+    // create() → sweep() must not collect it either.
+    store.create({ type: "voucher" });
+    store.complete(t.ticket, { fileId: "f2", filename: "y.pdf", byteLength: 1 });
+    expect(store.peek(t.ticket)?.result?.fileId).toBe("f2");
+  });
+
+  it("still collects an expired entry once release() clears the in-flight shield", () => {
+    let now = 0;
+    const store = new TicketStore(60_000, () => now);
+    const t = store.create({ type: "voucher" });
+    store.claim(t.ticket);
+    now = 61_000;
+    store.release(t.ticket); // the upload failed, past expiry
+    expect(store.peek(t.ticket)).toBeUndefined(); // expired + not in flight → evicted
+  });
+
+  // --- the body-read slot (bounds buffering; NOT the single-use lock) ------------
+
+  it("beginBodyRead grants one slot per ticket until endBodyRead releases it", () => {
+    const store = new TicketStore(60_000, () => 0);
+    expect(store.beginBodyRead("t1")).toBe(true);
+    expect(store.beginBodyRead("t1")).toBe(false); // a second concurrent reader is refused
+    expect(store.beginBodyRead("t2")).toBe(true); // slots are per ticket
+    store.endBodyRead("t1");
+    expect(store.beginBodyRead("t1")).toBe(true); // a sequential retry gets the slot back
+    store.endBodyRead("t1");
+    store.endBodyRead("t1"); // idempotent — the response-close hook may fire late
+    expect(store.beginBodyRead("t1")).toBe(true);
+  });
 });

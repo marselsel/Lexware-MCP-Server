@@ -24,16 +24,33 @@ URL-fetch tool from that PR was intentionally held back (see **Security** below)
 - **`SERVER_URL` (or `OAUTH_RESOURCE`) now applies in every auth mode**, not only OAuth. It is the
   server's public URL, and `create-upload-ticket` builds its browser link and `curl` command from it;
   a static-token deployment behind a real domain previously had it ignored and handed out loopback
-  links. Unset, the loopback fallback still applies, now on the configured `PORT`.
+  links. Unset, the loopback fallback still applies, on the port actually bound (`__PORT` under
+  `skybridge dev`, else `PORT`).
 
 ### Changed
 - The existing base64 upload tools are unchanged and remain available — the ticket route is additive.
 - **Body parsing now also defers `/upload` paths** from the pre-applied global JSON parser, alongside
   `/mcp`: the upload route reads the raw body itself, and letting the JSON parser run first turned a
   JSON-content-typed upload into an empty file. The route additionally rejects gzip framing
-  (`inflate: false`), rejects an invalid/expired/used ticket before reading any body, and holds a
-  synchronous single-use lock across the upload so a retried or duplicated request cannot file a second
-  voucher.
+  (`inflate: false`), rejects an invalid/expired/used ticket before reading any body, buffers at most
+  one request body per ticket at a time, and holds a synchronous single-use lock across the upload so
+  **concurrent or duplicated requests** cannot file a second voucher while an attempt is in flight.
+  One case is deliberately weaker: after a transport failure whose outcome is unknown (the upload may
+  or may not have reached Lexware), the ticket is released so a retry stays possible, and the error
+  says to check for the file before re-uploading — blind retries after such a failure can still
+  duplicate a receipt, which no client-side lock can prevent without upstream idempotency support.
+
+A post-integration review pass hardened the details: the upload result stays readable via
+`get-upload-result` for a full 15 minutes **after the upload completed** (previously it expired on the
+ticket's creation-time clock, so a minute-14 upload left a sub-minute read window and invited a
+duplicate); the generated `curl` command pins `Content-Type` explicitly (curl's `--data-binary`
+otherwise silently declared `application/x-www-form-urlencoded` and bypassed the documented fallback
+chain); a 401/403 from Lexware — the operator's API key being rejected — is answered as a generic 502
+instead of forwarding the upstream status and wording to the unauthenticated uploader;
+`get-upload-result` is annotated read-only so polling it doesn't trigger write-tool confirmations; the
+loopback link fallback follows `__PORT` under `skybridge dev`; and `OAUTH_RESOURCE` outside OAuth
+mode still takes precedence over `SERVER_URL` for upload links, but now announces itself with a
+startup warning instead of doing so silently.
 
 The ticket store is **in-process**, so this is a single-instance feature: a restart drops open tickets
 (they answer `410`, they do not hang), and behind a load balancer without sticky sessions an upload can

@@ -272,6 +272,48 @@ describe("loadConfig", () => {
     );
   });
 
+  it("prefers __PORT for the loopback fallback — that is the port the listener actually binds", () => {
+    // Under `skybridge dev` the listener binds __PORT (skybridge picks it itself,
+    // ~3000) and plain PORT is never consulted — links built from PORT refused
+    // connections on the very machine the fallback exists for. `npm start` is
+    // unaffected: server.ts copies config.port into __PORT only AFTER loadConfig.
+    expect(loadConfig({ ...base(), __PORT: "3000" } as NodeJS.ProcessEnv).publicBaseUrl).toBe("http://127.0.0.1:3000");
+    // Both set: __PORT is what is actually bound.
+    expect(
+      loadConfig({ ...base(), PORT: "9443", __PORT: "3000" } as NodeJS.ProcessEnv).publicBaseUrl,
+    ).toBe("http://127.0.0.1:3000");
+    // Garbage __PORT is ignored rather than pasted into links.
+    expect(loadConfig({ ...base(), __PORT: "nope" } as NodeJS.ProcessEnv).publicBaseUrl).toBe("http://127.0.0.1:8080");
+    // An explicit public URL always wins over any loopback fallback.
+    expect(
+      loadConfig({ ...base(), __PORT: "3000", SERVER_URL: "https://mcp.example.com" } as NodeJS.ProcessEnv)
+        .publicBaseUrl,
+    ).toBe("https://mcp.example.com");
+  });
+
+  it("warns when OAUTH_RESOURCE is set outside OAuth mode (it silently steers upload links)", () => {
+    // The migration footgun: switch from OAuth to a static token, remove
+    // OAUTH_ISSUER, update SERVER_URL — a stale OAUTH_RESOURCE left behind keeps
+    // every ticket link pointing at the old host, previously with no notice.
+    const c = loadConfig({
+      ...base(),
+      OAUTH_RESOURCE: "https://old.example.com",
+      SERVER_URL: "https://new.example.com",
+    } as NodeJS.ProcessEnv);
+    expect(c.auth.mode).toBe("static");
+    expect(c.publicBaseUrl).toBe("https://old.example.com"); // documented precedence still applies…
+    expect(c.warnings.some((w) => w.includes("OAUTH_RESOURCE") && w.includes("SERVER_URL"))).toBe(true); // …but loudly
+    // No warning in OAuth mode — there the resource IS the resource…
+    const oauth = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      OAUTH_RESOURCE: "https://mcp.example.com",
+    } as NodeJS.ProcessEnv);
+    expect(oauth.warnings).toEqual([]);
+    // …and none when the variable is simply absent.
+    expect(loadConfig(base()).warnings).toEqual([]);
+  });
+
   it("rejects an invalid PORT", () => {
     expect(() => loadConfig({ ...base(), PORT: "0" } as NodeJS.ProcessEnv)).toThrow(ConfigError);
     expect(() => loadConfig({ ...base(), PORT: "nope" } as NodeJS.ProcessEnv)).toThrow(ConfigError);
