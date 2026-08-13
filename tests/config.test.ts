@@ -11,7 +11,7 @@ describe("loadConfig", () => {
     expect(c.lexwareApiBaseUrl).toBe("https://api.lexware.io");
     expect(c.lexwareAppBaseUrl).toBe("https://app.lexware.de");
     expect(c.port).toBe(8080);
-    expect(c.capabilities).toEqual({ read: true, drafts: true, finalize: false });
+    expect(c.capabilities).toEqual({ read: true, drafts: true, finalize: false, urlUpload: false });
   });
 
   it("requires LEXWARE_API_KEY", () => {
@@ -198,7 +198,7 @@ describe("loadConfig", () => {
       LEXWARE_ENABLE_DRAFTS: "true",
       LEXWARE_ENABLE_FINALIZE: "true",
     } as NodeJS.ProcessEnv);
-    expect(c.capabilities).toEqual({ read: true, drafts: false, finalize: false });
+    expect(c.capabilities).toEqual({ read: true, drafts: false, finalize: false, urlUpload: false });
   });
 
   it("enables finalize when requested", () => {
@@ -337,6 +337,62 @@ describe("loadConfig", () => {
     // http on localhost is allowed (local mocks / testing).
     const c = loadConfig({ ...base(), LEXWARE_API_BASE_URL: "http://localhost:9000" } as NodeJS.ProcessEnv);
     expect(c.lexwareApiBaseUrl).toBe("http://localhost:9000");
+  });
+
+  it("LEXWARE_ENABLE_URL_UPLOAD is off by default and on only when asked for", () => {
+    expect(loadConfig(base()).capabilities.urlUpload).toBe(false);
+    expect(
+      loadConfig({ ...base(), LEXWARE_ENABLE_URL_UPLOAD: "true" } as NodeJS.ProcessEnv).capabilities.urlUpload,
+    ).toBe(true);
+  });
+
+  it("URL upload cannot outlive the drafts tier it writes through, and says so", () => {
+    for (const off of [{ LEXWARE_READ_ONLY: "true" }, { LEXWARE_ENABLE_DRAFTS: "false" }]) {
+      const c = loadConfig({ ...base(), ...off, LEXWARE_ENABLE_URL_UPLOAD: "true" } as NodeJS.ProcessEnv);
+      expect(c.capabilities.urlUpload, JSON.stringify(off)).toBe(false);
+      // Silently ignoring the flag would leave an operator believing the tool is live.
+      expect(c.warnings.join(" ")).toMatch(/LEXWARE_ENABLE_URL_UPLOAD=true has no effect/);
+    }
+  });
+
+  it("unlike finalize, URL upload does NOT pull the drafts tier up with it", () => {
+    const c = loadConfig({
+      ...base(),
+      LEXWARE_ENABLE_DRAFTS: "false",
+      LEXWARE_ENABLE_URL_UPLOAD: "true",
+    } as NodeJS.ProcessEnv);
+    expect(c.capabilities.drafts).toBe(false);
+  });
+
+  it("the upload allowlist defaults to the Microsoft file-sharing hosts when unset", () => {
+    expect(loadConfig(base()).uploadAllowedHosts).toEqual([
+      "sharepoint.com",
+      "onedrive.live.com",
+      "1drv.ms",
+      "graph.microsoft.com",
+    ]);
+  });
+
+  it("a configured allowlist REPLACES the defaults rather than extending them", () => {
+    const c = loadConfig({
+      ...base(),
+      LEXWARE_UPLOAD_ALLOWED_HOSTS: "files.example.com, CDN.Example.org ",
+    } as NodeJS.ProcessEnv);
+    expect(c.uploadAllowedHosts).toEqual(["files.example.com", "cdn.example.org"]);
+    // The point of replacing: Microsoft's domains must be opt-out-able.
+    expect(c.uploadAllowedHosts).not.toContain("sharepoint.com");
+  });
+
+  it("an EMPTY allowlist blocks every host instead of meaning 'allow everything'", () => {
+    const c = loadConfig({
+      ...base(),
+      LEXWARE_UPLOAD_ALLOWED_HOSTS: "",
+      LEXWARE_ENABLE_URL_UPLOAD: "true",
+    } as NodeJS.ProcessEnv);
+    expect(c.uploadAllowedHosts).toEqual([]);
+    // A typo that empties the list must not silently become an open SSRF surface, so the
+    // fail-closed reading is paired with a warning rather than left to be discovered.
+    expect(c.warnings.join(" ")).toMatch(/every host is blocked/);
   });
 
   it("describeCapabilities is secret-free and informative", () => {

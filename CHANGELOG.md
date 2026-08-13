@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`upload-file-from-url`, with the DNS-rebinding TOCTOU closed** — the tool held back from
+  [#34] in 0.1.11, returning with the connection-level IP pinning that release asked for. It fetches a
+  file from a share link server-side and stores it in Lexware, so a receipt already sitting in
+  OneDrive/SharePoint reaches the books without its bytes passing through the model context.
+  **Off by default** (`LEXWARE_ENABLE_URL_UPLOAD=false`) and gated separately from the drafts tier it
+  writes through: it is the only tool that makes this server originate an outbound request to a
+  destination the model chose, and that is not something to acquire as a side effect of enabling
+  drafts. Setting it without the drafts tier warns rather than silently doing nothing.
+- **`LEXWARE_UPLOAD_ALLOWED_HOSTS`** — the hosts that tool may fetch from, comma-separated, matched on
+  a dot boundary (`evilsharepoint.com` never passes as `sharepoint.com`). Unset means the built-in
+  Microsoft file-sharing list; a configured value **replaces** it rather than extending, so those
+  domains can be opted out of; an **empty** value blocks every host, which is how the fetcher is
+  switched off without unregistering it (and warns, so a typo is not mistaken for an open door).
+
+### Security
+- **The connection is pinned to the address that was checked.** The 0.1.11 note recorded why the
+  fetcher was withheld: its guards resolved the host, validated every returned address, and then let
+  `fetch` resolve the name a second time when it opened the socket — so the address that was
+  *approved* and the address that was *connected to* came from two different lookups, and a DNS
+  answer that changed in between (short TTL, or deliberate rebinding) walked past a check that
+  looked correct. `src/uploads/pinned-fetch.ts` removes the second lookup: the socket is given the
+  addresses the check just approved and never resolves anything. There is no longer a window between
+  the two, because there is no longer a second lookup to disagree with the first.
+  - Implemented on `node:https`'s `lookup` hook rather than an undici dispatcher, so **no runtime
+    dependency is added** to a server that fronts accounting data — and no second copy of undici
+    enters the process beside the one backing `fetch`.
+  - **TLS is untouched.** SNI and certificate validation still bind to the hostname; only the address
+    dialled comes from the pin. A test reads the SNI out of the raw ClientHello on the wire to hold
+    that property, rather than trusting the client to report on itself.
+  - Sockets are never pooled across requests (`keepAlive: false`, a fresh agent per request), so a
+    connection opened for a differently vetted request cannot be reused.
+- The allow-list and per-hop address checks from #34 are unchanged and still apply first; pinning is a
+  third layer, not a replacement for either.
+
 ## [0.1.11]
 
 Upload a receipt without pushing its bytes through the model context. Based on the

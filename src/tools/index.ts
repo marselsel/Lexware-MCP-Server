@@ -22,6 +22,7 @@ import { registerFileReadTools, registerFileWriteTools } from "./files.js";
 import { registerProfileTools } from "./profile.js";
 import { registerReferenceReadTools } from "./reference.js";
 import { registerUploadTools } from "./uploads.js";
+import { registerUrlUploadTool } from "./url-upload.js";
 import { registerVoucherWriteTools } from "./vouchers.js";
 
 /**
@@ -53,6 +54,13 @@ export function registerTools(
     registerVoucherWriteTools(server, client);
     registerFileWriteTools(server, client);
     registerUploadTools(server, uploadTickets, config.publicBaseUrl);
+  }
+
+  // Gated separately from the drafts tier, not nested inside it: config.capabilities
+  // already resolves urlUpload to false whenever drafts are off, so the flat check
+  // states the actual precondition instead of restating it in two places.
+  if (capabilities.urlUpload) {
+    registerUrlUploadTool(server, client, config.uploadAllowedHosts);
   }
 
   // Finalize / sensitive & irreversible tier (off by default).
