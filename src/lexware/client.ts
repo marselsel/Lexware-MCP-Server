@@ -142,7 +142,13 @@ export class LexwareClient {
       body: form,
       idempotent: false,
     });
-    return (await this.safeParse(res)) as T;
+    // Same body-read guard as request()/getBinary: a 2xx whose body then fails
+    // mid-read surfaces a classified LexwareApiError, not a raw undici transport error.
+    try {
+      return (await this.safeParse(res)) as T;
+    } catch (err) {
+      throw this.bodyReadError("POST", path, err);
+    }
   }
 
   /**

@@ -374,7 +374,11 @@ export function registerDocumentReadTools(
       annotations: RO,
     },
     async ({ id, voucherType }) => {
-      const path = VOUCHERTYPE_TO_PATH[voucherType];
+      // Object.hasOwn, not a truthy check: `voucherType` is a free string, and a
+      // prototype key like "toString" would otherwise resolve to an inherited function
+      // (truthy) and stringify into the request path. hasOwn restricts it to the real
+      // keys, so an unknown value gives a clean validation error, never a garbled path.
+      const path = Object.hasOwn(VOUCHERTYPE_TO_PATH, voucherType) ? VOUCHERTYPE_TO_PATH[voucherType] : undefined;
       if (!path) {
         throw new Error(
           `Unknown voucherType "${voucherType}". Known: ${Object.keys(VOUCHERTYPE_TO_PATH).join(", ")}.`,

@@ -292,6 +292,14 @@ describe("get-document dispatch + get-voucher-file", () => {
     await expect(handlers["get-document"]({ id: "z", voucherType: "bogus" })).rejects.toThrow(
       /Unknown voucherType/,
     );
+    // A prototype key must be rejected too, not resolve to an inherited function that
+    // stringifies into the request path. Before the Object.hasOwn guard these did NOT
+    // throw — they built a garbled `/v1/function toString()…/id` and called client.get.
+    const getCalls = get.mock.calls.length;
+    for (const voucherType of ["toString", "constructor", "hasOwnProperty", "__proto__"]) {
+      await expect(handlers["get-document"]({ id: "z", voucherType })).rejects.toThrow(/Unknown voucherType/);
+    }
+    expect(get.mock.calls.length).toBe(getCalls); // none of them reached the client
   });
 
   it("get-voucher-file resolves the voucher's file id and downloads it", async () => {
