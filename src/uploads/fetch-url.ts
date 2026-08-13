@@ -183,6 +183,14 @@ export function assertFetchableUrl(raw: string): URL {
   if (url.protocol !== "https:") {
     throw new Error(`URL scheme ${url.protocol} is not allowed — only https.`);
   }
+  // Node's `https.request` turns userinfo in the URL into an `Authorization: Basic`
+  // header and sends it to the (allow-listed) host; the `fetch` this transport replaced
+  // refused such URLs outright. Restore that refusal rather than silently putting
+  // caller-supplied credentials on the wire and into the peer's access log. Runs on
+  // every redirect hop too, since each hop re-enters here.
+  if (url.username || url.password) {
+    throw new Error("URLs with embedded credentials are not allowed.");
+  }
   return url;
 }
 
@@ -300,7 +308,10 @@ export async function fetchRemoteFile(
 
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");
-        if (!location) throw new Error(`Redirect without a location header.`);
+        if (!location) {
+          await drain(res);
+          throw new Error(`Redirect without a location header.`);
+        }
         await drain(res);
         url = assertFetchableUrl(new URL(location, url).toString());
         continue;

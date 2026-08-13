@@ -246,7 +246,10 @@ function resolveUploadAllowedHosts(env: NodeJS.ProcessEnv): string[] {
   if (raw === undefined) return DEFAULT_ALLOWED_HOSTS;
   return raw
     .split(",")
-    .map((h) => h.trim().toLowerCase())
+    // Strip a leading dot (the cookie/Java `.sharepoint.com` convention): isAllowedHost
+    // already matches subdomains on a dot boundary, so a `.`-prefixed entry would match
+    // NOTHING and silently block the very host the operator meant to allow.
+    .map((h) => h.trim().toLowerCase().replace(/^\.+/, ""))
     .filter(Boolean);
 }
 

@@ -2,7 +2,52 @@ import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
 import { fetchRemoteFile } from "../uploads/fetch-url.js";
+import { sanitizeFilename } from "../uploads/filename.js";
 import { text, WRITE } from "./shared.js";
+
+/**
+ * Last path segment of a URL, percent-decoded. Total by contract: a malformed URL or a
+ * lone `%` yields `""` (which `sanitizeFilename` then maps to `undefined`) rather than
+ * throwing — the caller relies on this to fall through to the fixed default.
+ */
+function urlBasename(rawUrl: string): string {
+  let last: string;
+  try {
+    last = new URL(rawUrl).pathname.split("/").pop() ?? "";
+  } catch {
+    return "";
+  }
+  try {
+    return decodeURIComponent(last);
+  } catch {
+    return last;
+  }
+}
+
+/**
+ * The filename to store the download under, decided the same way as the ticket flow
+ * (see `resolveFilename` in routes.ts): a sanitized model override, then the sanitized
+ * `Content-Disposition` name the fetch already resolved, then the URL's own basename
+ * (percent-decoded, sanitized), then a fixed default. EVERY candidate goes through
+ * `sanitizeFilename` — the same trust-boundary helper the ticket flow uses — so a name
+ * like `../../etc/passwd`, an embedded CRLF, or an over-long string never reaches the
+ * multipart field, the logs, or the tool result. Because `sanitizeFilename` never returns
+ * `""` (an empty/unusable name comes back `undefined`), each candidate is either a real
+ * name or falls through — so a trailing-slash URL (`.../x/` → basename `""`) lands on
+ * `download.bin`, never an empty filename.
+ *
+ * The URL basename is the LAST resort, so it is only parsed when the override and the
+ * response name both came back empty — no `new URL()`/decode on the common path.
+ * `resolveDownloadName` never throws: `urlBasename` is total (see above).
+ */
+export function resolveDownloadName(override: string | undefined, fromResponse: string | undefined, url: string): string {
+  const fromOverride = override !== undefined ? sanitizeFilename(override) : undefined;
+  if (fromOverride) return fromOverride;
+  // fromResponse (fetched.filename) was already sanitized in filenameFromDisposition and
+  // is never `""`, so it wins here without a second sanitize pass.
+  if (fromResponse) return fromResponse;
+  return sanitizeFilename(urlBasename(url)) ?? "download.bin";
+}
 
 /**
  * `upload-file-from-url` — the server-side URL fetcher.
@@ -41,7 +86,7 @@ export function registerUrlUploadTool(
     },
     async ({ url, filename, mimeType, type }: { url: string; filename?: string; mimeType?: string; type: string }) => {
       const fetched = await fetchRemoteFile(url, { allowedHosts });
-      const name = filename ?? fetched.filename ?? new URL(url).pathname.split("/").pop() ?? "download.bin";
+      const name = resolveDownloadName(filename, fetched.filename, url);
       const created = await client.postMultipart<{ id: string }>(
         "/v1/files",
         { bytes: fetched.bytes, filename: name, contentType: mimeType ?? fetched.contentType },

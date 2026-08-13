@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.12]
+
+The server-side URL fetcher held back in 0.1.11 — now with its DNS-rebinding TOCTOU closed by
+connection-level IP pinning. Based on the contribution by
+[@gutencoder](https://github.com/gutencoder) ([#39]); a review pass on top tightened the filename
+handling and a few edges (see **Fixed** below).
 
 ### Added
 - **`upload-file-from-url`, with the DNS-rebinding TOCTOU closed** — the tool held back from
@@ -40,6 +45,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     connection opened for a differently vetted request cannot be reused.
 - The allow-list and per-hop address checks from #34 are unchanged and still apply first; pinning is a
   third layer, not a replacement for either.
+
+### Fixed
+- **The stored filename now goes through the same sanitizer the ticket flow uses.** The model-supplied
+  `filename` override and the URL's own basename previously reached Lexware and the logs unsanitized —
+  only the `Content-Disposition` name was cleaned. A trailing-slash URL (`…/x/`) with no other name
+  produced an **empty** filename (`"" ?? "download.bin"` keeps the empty string); a `filename` of
+  `../../etc/passwd`, an embedded CRLF, or a 300-character string passed straight through. All three
+  candidates now run through `sanitizeFilename` — empty degrades to `download.bin`, and the URL
+  basename is percent-decoded first.
+- **URLs carrying embedded credentials are refused** (`https://user:pass@host/…`), on the first URL and
+  every redirect hop. The `node:https` transport would otherwise turn userinfo into an
+  `Authorization: Basic` header on the wire; the `fetch` it replaced refused such URLs, and that
+  refusal is restored.
+- **A leading dot on an allow-list entry (`.sharepoint.com`) no longer silently blocks everything** —
+  it is stripped, since subdomain matching is already on a dot boundary.
+
+[#39]: https://github.com/marselsel/lexware-mcp/pull/39
 
 ## [0.1.11]
 
