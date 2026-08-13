@@ -243,7 +243,10 @@ function resolvePublicBaseUrl(env: NodeJS.ProcessEnv, port: number): string {
  */
 function resolveUploadAllowedHosts(env: NodeJS.ProcessEnv): string[] {
   const raw = env.LEXWARE_UPLOAD_ALLOWED_HOSTS;
-  if (raw === undefined) return DEFAULT_ALLOWED_HOSTS;
+  // Copy, not the shared module-level array by reference: nothing mutates the resolved
+  // list today, but handing back DEFAULT_ALLOWED_HOSTS itself means a future sort/push on
+  // `config.uploadAllowedHosts` would silently corrupt the default for the whole process.
+  if (raw === undefined) return [...DEFAULT_ALLOWED_HOSTS];
   return raw
     .split(",")
     // Strip a leading dot (the cookie/Java `.sharepoint.com` convention): isAllowedHost

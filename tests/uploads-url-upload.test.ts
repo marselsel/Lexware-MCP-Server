@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveDownloadName } from "../src/tools/url-upload.js";
+import { resolveContentType, resolveDownloadName } from "../src/tools/url-upload.js";
 
 const URL_ = "https://acme.sharepoint.com/personal/beleg.pdf";
 
@@ -61,5 +61,20 @@ describe("resolveDownloadName", () => {
     // An earlier candidate still wins without the URL being parsed at all.
     expect(resolveDownloadName("real.pdf", undefined, "not a valid url")).toBe("real.pdf");
     expect(resolveDownloadName(undefined, "fromresp.pdf", "://also-bad")).toBe("fromresp.pdf");
+  });
+});
+
+describe("resolveContentType", () => {
+  it("prefers a non-blank override, else the response type", () => {
+    expect(resolveContentType("image/png", "application/pdf")).toBe("image/png");
+    expect(resolveContentType(undefined, "application/pdf")).toBe("application/pdf");
+  });
+
+  it("treats an empty or whitespace override as absent (|| not ??)", () => {
+    // The bug: `mimeType ?? fetched.contentType` kept an empty-string override, filing the
+    // receipt with a blank content type instead of the response-derived one. `z.string()
+    // .optional()` allows "", so this is reachable from the model.
+    expect(resolveContentType("", "application/pdf")).toBe("application/pdf");
+    expect(resolveContentType("   ", "application/pdf")).toBe("application/pdf");
   });
 });

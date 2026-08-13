@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ConfigError, describeCapabilities, loadConfig } from "../src/config.js";
+import { DEFAULT_ALLOWED_HOSTS } from "../src/uploads/fetch-url.js";
 
 const TOKEN = "a".repeat(40);
 const base = () => ({ LEXWARE_API_KEY: "key", MCP_AUTH_TOKEN: TOKEN }) as NodeJS.ProcessEnv;
@@ -365,12 +366,12 @@ describe("loadConfig", () => {
   });
 
   it("the upload allowlist defaults to the Microsoft file-sharing hosts when unset", () => {
-    expect(loadConfig(base()).uploadAllowedHosts).toEqual([
-      "sharepoint.com",
-      "onedrive.live.com",
-      "1drv.ms",
-      "graph.microsoft.com",
-    ]);
+    const hosts = loadConfig(base()).uploadAllowedHosts;
+    expect(hosts).toEqual(["sharepoint.com", "onedrive.live.com", "1drv.ms", "graph.microsoft.com"]);
+    // A COPY, not the shared module-level array — otherwise a future sort/push on the
+    // resolved list would corrupt the default for the whole process.
+    expect(hosts).not.toBe(DEFAULT_ALLOWED_HOSTS);
+    expect(hosts).toEqual(DEFAULT_ALLOWED_HOSTS);
   });
 
   it("a configured allowlist REPLACES the defaults rather than extending them", () => {

@@ -50,6 +50,17 @@ export function resolveDownloadName(override: string | undefined, fromResponse: 
 }
 
 /**
+ * Content type to file the upload under: a non-blank model override, else the type the
+ * response carried (`fetched.contentType`, which already defaults to
+ * `application/octet-stream`). `||`, not `??`, so an empty-string override (allowed by
+ * `z.string().optional()`) falls through rather than filing the receipt as a blank type —
+ * the same guard the ticket flow's `resolveContentType` uses.
+ */
+export function resolveContentType(override: string | undefined, fromResponse: string): string {
+  return override?.trim() || fromResponse;
+}
+
+/**
  * `upload-file-from-url` — the server-side URL fetcher.
  *
  * Deliberately its own file and its own capability gate (`LEXWARE_ENABLE_URL_UPLOAD`,
@@ -89,7 +100,7 @@ export function registerUrlUploadTool(
       const name = resolveDownloadName(filename, fetched.filename, url);
       const created = await client.postMultipart<{ id: string }>(
         "/v1/files",
-        { bytes: fetched.bytes, filename: name, contentType: mimeType ?? fetched.contentType },
+        { bytes: fetched.bytes, filename: name, contentType: resolveContentType(mimeType, fetched.contentType) },
         { type },
       );
       return {

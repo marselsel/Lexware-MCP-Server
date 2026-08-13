@@ -232,7 +232,12 @@ function filenameFromDisposition(value: string | null): string | undefined {
     } catch {
       // Malformed percent-encoding: keep the raw value rather than failing the download.
     }
-    return sanitizeFilename(raw);
+    const fromExt = sanitizeFilename(raw);
+    if (fromExt) return fromExt;
+    // A present-but-unusable `filename*` (empty value, or only control chars) must not
+    // discard a perfectly good plain `filename=` sitting right beside it — fall through
+    // to the plain form below rather than returning undefined. RFC 6266 precedence is
+    // still honoured: `filename*` wins whenever it actually decodes to a usable name.
   }
 
   const plainMatch = /filename\s*=\s*"?([^";]+)"?/i.exec(value);

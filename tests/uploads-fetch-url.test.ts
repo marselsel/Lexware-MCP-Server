@@ -465,6 +465,42 @@ describe("fetchRemoteFile", () => {
     expect(out.filename).toBe("Rechnung.pdf");
   });
 
+  it("degrades to the plain filename when filename* is present but decodes to nothing", async () => {
+    // filename* takes RFC 6266 precedence, but an EMPTY/unusable extended value must not
+    // discard a perfectly good plain filename sitting beside it — it should fall through.
+    const fetchImpl = (async () =>
+      new Response(new Uint8Array([1]), {
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": "attachment; filename*=UTF-8''; filename=\"Rechnung.pdf\"",
+        },
+      })) as unknown as typeof fetch;
+    const out = await fetchRemoteFile("https://ok.example.com/x", {
+      lookup: publicLookup,
+      fetchImpl,
+      allowedHosts: ["ok.example.com"],
+    });
+    expect(out.filename).toBe("Rechnung.pdf");
+  });
+
+  it("still lets a usable filename* win over the plain filename (precedence preserved)", async () => {
+    const fetchImpl = (async () =>
+      new Response(new Uint8Array([1]), {
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": "attachment; filename=\"plain.pdf\"; filename*=UTF-8''extended.pdf",
+        },
+      })) as unknown as typeof fetch;
+    const out = await fetchRemoteFile("https://ok.example.com/x", {
+      lookup: publicLookup,
+      fetchImpl,
+      allowedHosts: ["ok.example.com"],
+    });
+    expect(out.filename).toBe("extended.pdf");
+  });
+
   it("reduces a filename to its basename and strips path separators", async () => {
     const fetchImpl = (async () =>
       new Response(new Uint8Array([1]), {
