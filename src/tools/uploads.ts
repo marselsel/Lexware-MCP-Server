@@ -57,14 +57,17 @@ export function buildCurlCommand(uploadUrl: string, file: { filename?: string; m
   if (filename) {
     headers.push(` -H 'X-Filename-B64: ${Buffer.from(filename, "utf8").toString("base64url")}'`);
   }
-  // The placeholder path is SINGLE-QUOTED, and that is not cosmetic: measured by
-  // running this command literally, `FILE=/path with spaces/file.pdf` fails at
-  // the ASSIGNMENT ("spaces/file.pdf: command not found") — before curl ever starts. The
-  // naive edit is to paste a real path over the placeholder, and real paths contain
-  // spaces, so the quotes have to already be there. `"$FILE"` is likewise quoted at
-  // every expansion, and the URL stays single-quoted so the ticket value can never
-  // be re-interpreted by the shell.
-  return `FILE='/path/to/file.pdf'; curl -sS -X POST '${uploadUrl}'${headers.join("")} --data-binary @"$FILE"`;
+  // The placeholder path is DOUBLE-QUOTED, and both halves of that are deliberate.
+  // Quoted, because the instruction is to paste a real path over the placeholder
+  // and an unquoted `FILE=/path with spaces/file.pdf` fails at the ASSIGNMENT
+  // ("spaces/file.pdf: command not found") before curl ever starts. DOUBLE rather
+  // than single, because real paths contain apostrophes (`O'Brien/Rechnung.pdf`)
+  // far more often than `$` or backticks: an apostrophe inside single quotes ends
+  // the quote and breaks the whole command line, while a `$` inside double quotes
+  // merely expands to nothing and fails visibly as file-not-found. `"$FILE"` stays
+  // quoted at every expansion, and the URL stays SINGLE-quoted — it is
+  // server-controlled, never edited, and must never be re-interpreted by the shell.
+  return `FILE="/path/to/file.pdf"; curl -sS -X POST '${uploadUrl}'${headers.join("")} --data-binary @"$FILE"`;
 }
 
 /** Pure: builds the client-facing shape of a freshly issued ticket. Unit-tested. */

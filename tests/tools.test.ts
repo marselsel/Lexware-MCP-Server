@@ -89,7 +89,7 @@ function registeredNames(config: Config): string[] {
       return fakeServer;
     },
   } as unknown as McpServer;
-  registerTools(fakeServer, {} as unknown as LexwareClient, config, new TicketStore(), "https://mcp.example.test");
+  registerTools(fakeServer, {} as unknown as LexwareClient, config, new TicketStore());
   return names.sort();
 }
 

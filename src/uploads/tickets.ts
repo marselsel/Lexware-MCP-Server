@@ -69,26 +69,30 @@ export class TicketStore {
    * caller must call release() to allow a retry with the same ticket.
    */
   claim(ticket: string): TicketState {
-    const state = this.tickets.get(ticket);
-    if (!state || (state.expiresAt <= this.now() && !state.inFlight)) {
-      // Drop it the moment it is seen to be expired, instead of leaving it for the
-      // next create(): sweep() runs only there, so an instance that issues tickets
-      // and then goes quiet would hold every expired entry for as long as it lives.
-      // Answer is unchanged either way — 410.
-      //
-      // EXCEPT an in-flight entry: a claim at 14:59 whose Lexware call is still
-      // running at 15:01 must not be evicted by a SECOND request racing the same
-      // ticket — deleting it here would orphan the first request's complete()
-      // (its result silently lost) even though the upload succeeded. The racing
-      // request falls through to the "already used" rejection below instead.
-      if (state) this.tickets.delete(ticket);
-      throw new TicketError("Upload ticket is unknown or expired. Create a new one.", 410);
-    }
-    if (state.result || state.inFlight) {
-      throw new TicketError("Upload ticket was already used.", 410);
-    }
+    const err = this.usabilityError(ticket);
+    if (err) throw err;
+    // usabilityError() returned undefined, so the entry exists (peek() would have
+    // evicted an expired one), is not completed, and is not in flight.
+    const state = this.tickets.get(ticket)!;
     state.inFlight = true;
     return state;
+  }
+
+  /**
+   * Read-only usability check — returns the exact {@link TicketError} that
+   * claim() would throw, or `undefined` for a claimable ticket. The single
+   * source of truth for the reject conditions AND their messages: claim() and
+   * the route layer's two non-claiming call sites (the GET page and the POST
+   * pre-body check) all go through here, so they can never drift apart.
+   * Delegates to peek(), inheriting its expiry-eviction and its in-flight
+   * shield (an expired-but-in-flight entry reads "already used", not
+   * "expired" — see peek()).
+   */
+  usabilityError(ticket: string): TicketError | undefined {
+    const state = this.peek(ticket);
+    if (!state) return new TicketError("Upload ticket is unknown or expired. Create a new one.", 410);
+    if (state.result || state.inFlight) return new TicketError("Upload ticket was already used.", 410);
+    return undefined;
   }
 
   /**

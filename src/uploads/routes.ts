@@ -33,20 +33,6 @@ class UploadRequestError extends Error {
 }
 
 /**
- * Mirrors `claim()`'s reject conditions (unknown/expired, or already claimed/
- * completed) as a read-only check, for the two call sites that must NOT claim
- * the ticket themselves: `GET` (just renders the page or a 410) and the `POST`
- * pre-check below (must reject before the body is read, without taking the
- * lock — see `requireClaimableTicket`). `claim()` remains the only place that
- * actually sets `inFlight`.
- */
-function ticketUsabilityError(state: TicketState | undefined): { status: number; message: string } | undefined {
-  if (!state) return { status: 410, message: "Upload ticket is unknown or expired. Create a new one." };
-  if (state.result || state.inFlight) return { status: 410, message: "Upload ticket was already used." };
-  return undefined;
-}
-
-/**
  * `req.params.ticket` types as `string | string[]` in some middleware-chain
  * positions (Express's ParamsDictionary allows repeated-segment params to be
  * arrays) even though this route only ever declares a single `:ticket`
@@ -63,13 +49,15 @@ function ticketParam(req: express.Request): string {
  * Without this, a request naming a bogus ticket could still make the server
  * buffer up to `maxBytes` of attacker-supplied data — worse, WITH gzip framing
  * decompressed (see `inflate: false` on the raw parser below) — purely to
- * discover the ticket doesn't exist. Uses `peek()`, not `claim()`: this check
- * must not itself take the lock, or an aborted/failed request for a valid
- * ticket would burn it before the real handler ever ran.
+ * discover the ticket doesn't exist. Uses the store's read-only
+ * `usabilityError()` (claim()'s own single source of truth for conditions and
+ * messages), never `claim()` itself: this check must not take the lock, or an
+ * aborted/failed request for a valid ticket would burn it before the real
+ * handler ever ran.
  */
 function requireClaimableTicket(store: TicketStore): express.RequestHandler {
   return (req, res, next) => {
-    const err = ticketUsabilityError(store.peek(ticketParam(req)));
+    const err = store.usabilityError(ticketParam(req));
     if (err) {
       res.status(err.status).json({ error: err.message });
       return;
@@ -114,7 +102,7 @@ export function registerUploadRoutes(
   maxBytes: number = DEFAULT_MAX_BYTES,
 ): void {
   app.get("/upload/:ticket", (req, res) => {
-    const err = ticketUsabilityError(store.peek(ticketParam(req)));
+    const err = store.usabilityError(ticketParam(req));
     if (err) {
       res.status(err.status).type("text/plain").send(err.message);
       return;

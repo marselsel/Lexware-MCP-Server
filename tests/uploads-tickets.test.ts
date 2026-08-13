@@ -180,6 +180,22 @@ describe("TicketStore", () => {
     expect(store.peek(t.ticket)).toBeUndefined(); // expired + not in flight → evicted
   });
 
+  // --- usabilityError: claim()'s single source of truth, read-only ---------------
+
+  it("usabilityError mirrors claim() exactly without ever taking the lock", () => {
+    const store = new TicketStore(60_000, () => 0);
+    expect(store.usabilityError("nope")?.message).toMatch(/unknown or expired/);
+    expect(store.usabilityError("nope")?.status).toBe(410);
+    const t = store.create({ type: "voucher" });
+    // Checking is read-only: any number of checks, and the ticket still claims.
+    expect(store.usabilityError(t.ticket)).toBeUndefined();
+    expect(store.usabilityError(t.ticket)).toBeUndefined();
+    const claimed = store.claim(t.ticket);
+    expect(store.usabilityError(t.ticket)?.message).toMatch(/already used/); // in flight
+    store.complete(claimed.ticket, { fileId: "f", filename: "x.pdf", byteLength: 1 });
+    expect(store.usabilityError(t.ticket)?.message).toMatch(/already used/); // completed
+  });
+
   // --- the body-read slot (bounds buffering; NOT the single-use lock) ------------
 
   it("beginBodyRead grants one slot per ticket until endBodyRead releases it", () => {

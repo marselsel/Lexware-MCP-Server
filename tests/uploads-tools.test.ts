@@ -140,31 +140,33 @@ describe("buildCurlCommand", () => {
     // false type. With the header stripped, nothing is declared and the server's
     // ticket-mimeType / application/octet-stream fallback actually decides.
     const bare = buildCurlCommand(URL_);
-    expect(bare).toBe(`FILE='/path/to/file.pdf'; curl -sS -X POST '${URL_}' -H 'Content-Type:' --data-binary @"$FILE"`);
+    expect(bare).toBe(`FILE="/path/to/file.pdf"; curl -sS -X POST '${URL_}' -H 'Content-Type:' --data-binary @"$FILE"`);
     expect(headerValue(bare, "Content-Type")).toBeUndefined(); // unset form carries no value
   });
 
   it("leaves exactly ONE spot to replace: the FILE= path", () => {
     for (const cmd of [full, buildCurlCommand(URL_), buildCurlCommand(URL_, { filename: "a.pdf" })]) {
-      expect(cmd.startsWith("FILE='/path/to/file.pdf'; curl ")).toBe(true);
+      expect(cmd.startsWith('FILE="/path/to/file.pdf"; curl ')).toBe(true);
       expect(cmd.split("/path/to/file.pdf")).toHaveLength(2);
       expect(cmd).toContain('--data-binary @"$FILE"');
     }
   });
 
-  it("quotes the FILE placeholder so a real path with spaces survives the naive edit", () => {
-    // Found by running the emitted command literally: an UNQUOTED
-    // `FILE=/path with spaces/file.pdf` fails at the ASSIGNMENT — the shell
-    // splits at the space and tries to run the rest ("spaces/file.pdf: command not
-    // found"), before curl ever starts. The instruction is "replace the path in
-    // place", and real paths contain spaces, so the quotes must already be there.
-    const spacey = "/home/user/receipts/Rechnung Müller.pdf";
-    const edited = full.replace("/path/to/file.pdf", spacey);
-    const assignment = edited.slice(0, edited.indexOf("; curl "));
-    expect(assignment).toBe(`FILE='${spacey}'`);
-    // Only a real shell can prove this property, so ask one.
-    const seenByShell = execFileSync("sh", ["-c", `${assignment}; printf %s "$FILE"`], { encoding: "utf8" });
-    expect(seenByShell).toBe(spacey);
+  it("quotes the FILE placeholder so real paths with spaces AND apostrophes survive the naive edit", () => {
+    // Quoted at all, because an UNQUOTED `FILE=/path with spaces/file.pdf` fails
+    // at the ASSIGNMENT ("spaces/file.pdf: command not found") before curl ever
+    // starts. DOUBLE-quoted, because an apostrophe pasted into SINGLE quotes ends
+    // the quote and breaks the whole command line — and `O'Brien` paths are far
+    // more common than `$` in paths (which inside double quotes merely expands to
+    // nothing and fails visibly as file-not-found).
+    for (const p of ["/home/user/receipts/Rechnung Müller.pdf", "/home/user/O'Brien/Rechnung 2026.pdf"]) {
+      const edited = full.replace("/path/to/file.pdf", p);
+      const assignment = edited.slice(0, edited.indexOf("; curl "));
+      expect(assignment).toBe(`FILE="${p}"`);
+      // Only a real shell can prove this property, so ask one.
+      const seenByShell = execFileSync("sh", ["-c", `${assignment}; printf %s "$FILE"`], { encoding: "utf8" });
+      expect(seenByShell).toBe(p);
+    }
   });
 
   it("keeps the url single-quoted so a ticket value can never break out", () => {
@@ -181,7 +183,7 @@ describe("buildCurlCommand", () => {
     const hostile = buildCurlCommand(URL_, { mimeType: "application/pdf'; rm -rf ~; echo '" });
     expect(hostile).not.toContain("rm -rf");
     expect(hostile).not.toMatch(/Content-Type: \S/); // nothing of the hostile value survives
-    expect(hostile).toBe(`FILE='/path/to/file.pdf'; curl -sS -X POST '${URL_}' -H 'Content-Type:' --data-binary @"$FILE"`);
+    expect(hostile).toBe(`FILE="/path/to/file.pdf"; curl -sS -X POST '${URL_}' -H 'Content-Type:' --data-binary @"$FILE"`);
     // A legitimate type with parameters is not a bare token either — dropped, not mangled.
     expect(buildCurlCommand(URL_, { mimeType: "text/plain; charset=utf-8" })).not.toMatch(/Content-Type: \S/);
     // Ordinary types still pass.

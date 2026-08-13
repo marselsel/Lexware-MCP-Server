@@ -33,7 +33,6 @@ export function registerTools(
   client: LexwareClient,
   config: Config,
   uploadTickets: TicketStore,
-  publicBaseUrl: string,
 ): void {
   const { capabilities } = config;
 
@@ -53,7 +52,7 @@ export function registerTools(
     registerDocumentDraftTools(server, client);
     registerVoucherWriteTools(server, client);
     registerFileWriteTools(server, client);
-    registerUploadTools(server, uploadTickets, publicBaseUrl);
+    registerUploadTools(server, uploadTickets, config.publicBaseUrl);
   }
 
   // Finalize / sensitive & irreversible tier (off by default).
