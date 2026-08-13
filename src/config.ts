@@ -5,6 +5,10 @@
  * any Skybridge/Express imports so it can be unit-tested in isolation.
  */
 
+// The allow-list default lives with the fetcher that enforces it, so the documented
+// default and the applied default cannot drift apart.
+import { DEFAULT_ALLOWED_HOSTS } from "./uploads/fetch-url.js";
+
 /** Minimum length for `MCP_AUTH_TOKEN`. A 32-hex-char token is 32 chars. */
 export const MIN_TOKEN_LENGTH = 16;
 
@@ -24,6 +28,14 @@ export interface Capabilities {
   drafts: boolean;
   /** Finalize / legally-binding write tools. */
   finalize: boolean;
+  /**
+   * `upload-file-from-url`, the server-side URL fetcher. Off by default and gated
+   * separately from the rest of the drafts tier, because it is the one tool that makes
+   * this server originate outbound requests to a location the model chose — a class of
+   * risk (SSRF) the other write tools simply do not have. An operator who wants drafts
+   * should not silently get an outbound fetcher along with them.
+   */
+  urlUpload: boolean;
 }
 
 /**
@@ -98,6 +110,13 @@ export interface Config {
    * that resolves nowhere but inside the container.
    */
   publicBaseUrl: string;
+  /**
+   * Hosts `upload-file-from-url` may fetch from (`LEXWARE_UPLOAD_ALLOWED_HOSTS`,
+   * comma-separated). Unset means the built-in Microsoft file-sharing list; see
+   * {@link resolveUploadAllowedHosts} for why setting it REPLACES rather than extends,
+   * and why an empty value blocks everything.
+   */
+  uploadAllowedHosts: string[];
   port: number;
   debugLogging: boolean;
   capabilities: Capabilities;
@@ -206,6 +225,29 @@ function resolvePublicBaseUrl(env: NodeJS.ProcessEnv, port: number): string {
   const bound = env.__PORT?.trim();
   const boundPort = bound && /^\d+$/.test(bound) ? Number(bound) : NaN;
   return `http://127.0.0.1:${boundPort >= 1 && boundPort <= 65535 ? boundPort : port}`;
+}
+
+/**
+ * Hosts `upload-file-from-url` may fetch from.
+ *
+ * Three properties, each chosen deliberately:
+ *
+ *  - **Unset means the built-in Microsoft file-sharing list**, so an operator who never
+ *    touches the variable behaves exactly as if it did not exist.
+ *  - **A configured list REPLACES the defaults, it does not extend them.** Extending
+ *    would make Microsoft's domains impossible to opt out of, which is the wrong default
+ *    for a self-hosted server that may have nothing to do with M365.
+ *  - **An empty value blocks every host**, disabling the tool. An allow-list that cannot
+ *    be emptied cannot be used to switch the feature off, and "empty means allow
+ *    everything" would turn a typo into an open SSRF surface. Hence `??` and not `||`.
+ */
+function resolveUploadAllowedHosts(env: NodeJS.ProcessEnv): string[] {
+  const raw = env.LEXWARE_UPLOAD_ALLOWED_HOSTS;
+  if (raw === undefined) return DEFAULT_ALLOWED_HOSTS;
+  return raw
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
 }
 
 /** Resolve how `/mcp` is authenticated, failing closed if nothing is configured. */
@@ -338,8 +380,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // irreversible create-finalized-* tools (no safe draft path). Never allow that.
   const draftsRequested = parseBool(env.LEXWARE_ENABLE_DRAFTS, true);
   const enableDrafts = readOnly ? false : draftsRequested || enableFinalize;
+  // Opt-in, and only meaningful inside the drafts tier (it writes a file to Lexware).
+  // Unlike finalize→drafts, this one does NOT pull drafts up: an outbound fetcher is
+  // not something to enable as a side effect of a flag about uploads.
+  const urlUploadRequested = parseBool(env.LEXWARE_ENABLE_URL_UPLOAD, false);
+  const enableUrlUpload = enableDrafts && urlUploadRequested;
+  const uploadAllowedHosts = resolveUploadAllowedHosts(env);
 
   const warnings: string[] = [];
+  if (urlUploadRequested && !enableDrafts) {
+    warnings.push(
+      "LEXWARE_ENABLE_URL_UPLOAD=true has no effect: upload-file-from-url writes a file to Lexware and " +
+        "lives in the drafts tier, which is disabled (LEXWARE_READ_ONLY / LEXWARE_ENABLE_DRAFTS).",
+    );
+  }
+  if (enableUrlUpload && uploadAllowedHosts.length === 0) {
+    warnings.push(
+      "LEXWARE_ENABLE_URL_UPLOAD=true but LEXWARE_UPLOAD_ALLOWED_HOSTS is empty — every host is blocked, " +
+        "so upload-file-from-url is registered but will refuse every URL.",
+    );
+  }
   if (!readOnly && !draftsRequested && enableFinalize) {
     warnings.push(
       "LEXWARE_ENABLE_DRAFTS=false was overridden to true because LEXWARE_ENABLE_FINALIZE=true — the " +
@@ -370,9 +430,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     auth,
     publicBaseUrl: resolvePublicBaseUrl(env, port),
+    uploadAllowedHosts,
     port,
     debugLogging: parseBool(env.LEXWARE_DEBUG_LOGGING, false),
-    capabilities: { read: true, drafts: enableDrafts, finalize: enableFinalize },
+    capabilities: { read: true, drafts: enableDrafts, finalize: enableFinalize, urlUpload: enableUrlUpload },
     warnings,
   };
 }
@@ -382,6 +443,7 @@ export function describeCapabilities(config: Config): string {
   const tiers = ["read"];
   if (config.capabilities.drafts) tiers.push("drafts");
   if (config.capabilities.finalize) tiers.push("finalize");
+  if (config.capabilities.urlUpload) tiers.push("url-upload");
   const auth =
     config.auth.mode === "oauth"
       ? "oauth"

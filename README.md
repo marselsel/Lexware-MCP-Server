@@ -32,7 +32,8 @@ Related projects — local (stdio) Lexware MCP servers:
 
 ## Capabilities
 
-62 tools across three tiers you enable via environment variables:
+62 tools across three tiers you enable via environment variables, plus one opt-in tool
+outside them (`upload-file-from-url`, see below):
 
 | Tier | Default | What it covers |
 |------|---------|----------------|
@@ -41,6 +42,35 @@ Related projects — local (stdio) Lexware MCP servers:
 | **Finalize** (`LEXWARE_ENABLE_FINALIZE`) | off | Issue **legally binding** finalized documents in one step via the dedicated `create-finalized-*` tools (confirmation-gated); irreversible article deletes; **manage webhook event subscriptions** (create + delete — a webhook streams financial events to an external URL, so it's opt-in). Enabling this tier also enables Drafts. |
 
 Set `LEXWARE_READ_ONLY=true` to force read-only (overrides the flags above).
+
+#### `upload-file-from-url` — outside the tiers, off by default
+
+One tool sits outside this table: `upload-file-from-url` fetches a file from a share link
+**server-side** and stores it in Lexware, which is how a receipt already sitting in
+OneDrive/SharePoint gets into the books without a round trip through the model. It is
+enabled with `LEXWARE_ENABLE_URL_UPLOAD=true` and needs the drafts tier (it will not turn
+that tier on for you).
+
+It has its own switch because it has its own risk: it is the only tool that makes this
+server originate an outbound request to a destination the model chose — server-side
+request forgery, in the general case. Three things bound it, applied at **every** redirect
+hop:
+
+1. **A host allow-list**, matched on a dot boundary so `evilsharepoint.com` cannot pass as
+   `sharepoint.com`. Configure with `LEXWARE_UPLOAD_ALLOWED_HOSTS`; unset means the
+   Microsoft file-sharing defaults, a set value replaces them, an empty value blocks
+   everything.
+2. **A resolved-address check** rejecting loopback, private, link-local (including the
+   `169.254.169.254` metadata endpoint), CGNAT, multicast and reserved space, in every
+   IPv4, IPv6 and IPv4-in-IPv6 spelling.
+3. **Connection pinning.** The socket connects to an address from the very lookup that
+   step 2 approved, rather than letting the HTTP client resolve the name again. Without
+   this, steps 1 and 2 describe one lookup and the connection uses another, and a DNS
+   answer that changes in between (rebinding) slips past a check that looked correct.
+   TLS is unaffected: the certificate is still validated against the hostname.
+
+Only `https` is accepted, the download is capped at 20 MB and 30 s, and redirects are
+followed manually — at most three — so no hop skips the checks.
 
 ### What that looks like in practice
 
@@ -151,6 +181,8 @@ LEXWARE_API_KEY=... MCP_AUTH_TOKEN=... npm start
 | `LEXWARE_READ_ONLY` | `false` | Register only read tools (hard override) |
 | `LEXWARE_ENABLE_DRAFTS` | `true` | Enable create-draft tools |
 | `LEXWARE_ENABLE_FINALIZE` | `false` | Enable finalize / legally-binding tools (also enables Drafts) |
+| `LEXWARE_ENABLE_URL_UPLOAD` | `false` | Enable `upload-file-from-url` (server-side fetch). Requires the Drafts tier; does not enable it |
+| `LEXWARE_UPLOAD_ALLOWED_HOSTS` | Microsoft file-sharing hosts | Hosts `upload-file-from-url` may fetch from, comma-separated. Replaces the defaults; empty blocks everything |
 | `LEXWARE_API_BASE_URL` | `https://api.lexware.io` | API base URL |
 | `LEXWARE_APP_BASE_URL` | `https://app.lexware.de` | Web-app base for document deeplinks |
 | `PORT` | `8080` | Listen port (your platform may inject this) |
