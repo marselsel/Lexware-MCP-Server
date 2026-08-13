@@ -102,6 +102,38 @@ describe("fetchRemoteFile", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("rejects a URL with embedded credentials, before any lookup or connection", async () => {
+    // The node:https transport turns userinfo into an Authorization: Basic header and
+    // sends it to the (allow-listed) host — the fetch it replaced refused such URLs. The
+    // guard restores that, and rejects at the URL stage so nothing is resolved or dialled.
+    let lookups = 0;
+    const lookup = async () => {
+      lookups++;
+      return ["93.184.216.34"];
+    };
+    await expect(
+      fetchRemoteFile("https://user:secret@foo.sharepoint.com/x.pdf", { lookup }),
+    ).rejects.toThrow(/credentials/i);
+    expect(lookups).toBe(0);
+  });
+
+  it("rejects a redirect whose Location carries credentials, before the next request goes out", async () => {
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      seen.push(String(url));
+      // A same-host relative Location is the one form that would preserve userinfo; force
+      // the absolute credentialed form to prove the hop is re-checked either way.
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://user:secret@foo.sharepoint.com/next.pdf" },
+      });
+    }) as unknown as typeof fetch;
+    await expect(
+      fetchRemoteFile("https://foo.sharepoint.com/start.pdf", { lookup: publicLookup, fetchImpl }),
+    ).rejects.toThrow(/credentials/i);
+    expect(seen).toHaveLength(1); // stopped at the redirect, never issued the second request
+  });
+
   it("rejects a host that is not on the allowlist", async () => {
     await expect(
       fetchRemoteFile("https://not-allowed.example.com/x.pdf", { lookup: publicLookup }),

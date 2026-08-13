@@ -383,6 +383,16 @@ describe("loadConfig", () => {
     expect(c.uploadAllowedHosts).not.toContain("sharepoint.com");
   });
 
+  it("strips a leading dot from an allowlist entry so `.sharepoint.com` is not silently dead", () => {
+    // isAllowedHost matches subdomains on a dot boundary already, so a `.`-prefixed entry
+    // (the cookie/Java convention) would match NOTHING and quietly block the intended host.
+    const c = loadConfig({
+      ...base(),
+      LEXWARE_UPLOAD_ALLOWED_HOSTS: ".files.example.com, ..cdn.example.org",
+    } as NodeJS.ProcessEnv);
+    expect(c.uploadAllowedHosts).toEqual(["files.example.com", "cdn.example.org"]);
+  });
+
   it("an EMPTY allowlist blocks every host instead of meaning 'allow everything'", () => {
     const c = loadConfig({
       ...base(),
