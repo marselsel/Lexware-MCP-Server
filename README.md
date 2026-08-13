@@ -1,5 +1,9 @@
 # Lexware Office MCP Server
 
+[![CI](https://github.com/marselsel/Lexware-MCP-Server/actions/workflows/ci.yml/badge.svg)](https://github.com/marselsel/Lexware-MCP-Server/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/marselsel/Lexware-MCP-Server)](https://github.com/marselsel/Lexware-MCP-Server/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 An open-source, self-hostable **[MCP](https://modelcontextprotocol.io) server** for the
 [Lexware Office](https://developers.lexware.io/docs/) accounting API. Run your own instance,
 connect it to Claude, and let an agent read your invoices, vouchers, contacts and articles —
@@ -38,6 +42,47 @@ Related projects — local (stdio) Lexware MCP servers:
 
 Set `LEXWARE_READ_ONLY=true` to force read-only (overrides the flags above).
 
+### What that looks like in practice
+
+> *"Summarize my open invoices for this quarter — who still owes what?"*
+>
+> *"Draft an invoice to Müller GmbH for 12 consulting hours at 140 €, due in 14 days."*
+>
+> *"Here's the Hetzner receipt for June — file it in the bookkeeping."* → see
+> [Uploading receipts](#uploading-receipts-no-base64-through-the-model)
+>
+> *"Render invoice RE-2026-0042 as a PDF and give me the deeplink to it."*
+
+## Uploading receipts (no base64 through the model)
+
+Attaching a file through a chat has an awkward default: `upload-file` needs the bytes as
+base64 **inside the model's tool call**, so the whole receipt travels through the
+conversation — every byte billed as tokens (base64 adds ~33% on top), the file's contents
+sitting in the transcript, and a ~8 MB practical ceiling. The model never needed the bytes;
+it only needs the **file id** that comes back.
+
+The ticket flow routes the bytes *around* the model:
+
+1. You ask Claude to file a receipt. It calls **`create-upload-ticket`** and hands you a
+   link like `https://your-server…/upload/<ticket>`.
+2. You open the link and **drag the file onto the page** — or run the ready-made `curl`
+   one-liner next to a local file (replace only the `FILE=` path; nothing else needs to be
+   installed or edited). The bytes go client → server → Lexware directly.
+3. Claude reads the resulting file id with **`get-upload-result`** (the `curl` variant
+   prints it directly) and carries on with the actual bookkeeping — e.g. `create-voucher`
+   with `files: [fileId]`, or linking the receipt to an existing voucher.
+
+**The ticket is the credential.** It is minted only through the authenticated `/mcp`
+endpoint (drafts tier), is 24 random bytes (192-bit) rendered base64url, valid for
+15 minutes, single-use, and write-only — it authorizes exactly one file drop and grants no
+read access. The `/upload/:ticket` endpoint sits outside the OAuth gate *by design* (a
+plain browser or `curl` holds no MCP token); this is the same trust model as a pre-signed
+upload URL. Filenames travel as `X-Filename-B64` (base64url of the UTF-8 bytes), so
+umlauts, dashes, typographic quotes and emoji arrive in the books intact.
+
+The ticket store is in-memory: run a single instance (see [Deploy](#deploy)), and note
+that a restart voids open tickets — they answer `410`, and you simply issue a new one.
+
 ## Client support & authentication
 
 The server supports two ways to protect `/mcp`, chosen by environment:
@@ -69,7 +114,7 @@ neither set, the server refuses to start unless `MCP_ALLOW_UNAUTHENTICATED=true`
 ## Quick start (Docker)
 
 ```bash
-git clone https://github.com/marselsel/lexware-mcp && cd lexware-mcp
+git clone https://github.com/marselsel/Lexware-MCP-Server && cd Lexware-MCP-Server
 cp .env.example .env          # set LEXWARE_API_KEY and MCP_AUTH_TOKEN
 docker compose up --build     # serves on http://localhost:8080/mcp
 ```
@@ -143,8 +188,10 @@ docker run -p 8080:8080 --env-file .env lexware-mcp
 Production notes:
 - Serve over **HTTPS** (terminate TLS at your platform or a reverse proxy).
 - Set auth via env (`OAUTH_ISSUER…` or `MCP_AUTH_TOKEN`) — the server fails closed otherwise.
-- **Run a single instance** (or cap autoscaling to 1): the ~2 req/s rate limiter is
-  per-process, so multiple instances would aggregate beyond Lexware's limit.
+- **Run a single instance** (or cap autoscaling to 1), for two reasons: the ~2 req/s rate
+  limiter is per-process, so multiple instances would aggregate beyond Lexware's limit —
+  and upload tickets live in process memory, so behind a load balancer without sticky
+  sessions an upload can land on an instance that never issued its ticket.
 - Health check: `GET /status` (returns `200`).
 
 **Google Cloud Run:** a step-by-step recipe (Secret Manager + `gcloud run deploy` + custom
@@ -157,6 +204,8 @@ domain) is in [docs/cloud-run.md](docs/cloud-run.md).
 - `src/lexware/` — rate-limited (~2 req/s, token bucket), retry-aware client with safe error
   mapping; never retries non-idempotent POSTs on ambiguous failures (no duplicate documents).
 - `src/tools/` — tools registered conditionally by tier.
+- `src/uploads/` — the single-use ticket store and the raw-body `/upload/:ticket` routes
+  (mounted only with the drafts tier; the ticket is the credential).
 - `src/server.ts` — wires it together on the Skybridge Express server.
 
 ## Development
