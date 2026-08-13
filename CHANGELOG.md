@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13]
+
+Robustness fixes surfaced by a full security audit and code-review pass of the server. No
+behaviour changes for valid input; no security vulnerabilities were found.
+
+### Fixed
+- **`upload-file-from-url`: an empty-string `mimeType` override no longer files the receipt with a
+  blank content type.** It now falls through to the response-derived type (`||`, not `??`), matching
+  the ticket flow's guard and the filename handling in the same tool.
+- **A present-but-unusable `Content-Disposition` `filename*` no longer discards a valid plain
+  `filename=` beside it.** An empty or control-character-only extended value degrades to the plain
+  form; RFC 6266 precedence is preserved (`filename*` still wins whenever it decodes to a usable name).
+- **`get-document` rejects an unknown `voucherType` cleanly** (`Object.hasOwn`), instead of letting a
+  prototype key such as `toString` resolve to an inherited function that stringified into the request
+  path (which reached Lexware only as a same-host 404 — no host escape, no key exposure).
+- **`postMultipart` classifies a mid-read failure after a 2xx as a network error**, like the other
+  client methods, rather than surfacing a raw transport error.
+- **The default upload host allow-list is returned as a copy**, not the shared module array by
+  reference — pre-empting any future in-place mutation corrupting the process-wide default.
+
 ## [0.1.12]
 
 The server-side URL fetcher held back in 0.1.11 — now with its DNS-rebinding TOCTOU closed by
