@@ -119,6 +119,32 @@ describe("registerTools (tiered registration)", () => {
     expect(names).toEqual([...READ_TOOLS].sort());
   });
 
+  it("does NOT register upload-file-from-url by default — the outbound fetcher is opt-in", () => {
+    const names = registeredNames(loadConfig(env()));
+    expect(names).not.toContain("upload-file-from-url");
+  });
+
+  it("registers upload-file-from-url only when LEXWARE_ENABLE_URL_UPLOAD is on", () => {
+    const names = registeredNames(loadConfig(env({ LEXWARE_ENABLE_URL_UPLOAD: "true" })));
+    expect(names).toEqual([...READ_TOOLS, ...DRAFT_TOOLS, "upload-file-from-url"].sort());
+  });
+
+  it("does not register it in read-only mode, even when explicitly enabled", () => {
+    // The flag says "yes" and the tier says "no". A tool that writes a file into the
+    // bookkeeping must never win that argument.
+    const names = registeredNames(
+      loadConfig(env({ LEXWARE_READ_ONLY: "true", LEXWARE_ENABLE_URL_UPLOAD: "true" })),
+    );
+    expect(names).toEqual([...READ_TOOLS].sort());
+  });
+
+  it("does not register it when the drafts tier is off, even when explicitly enabled", () => {
+    const names = registeredNames(
+      loadConfig(env({ LEXWARE_ENABLE_DRAFTS: "false", LEXWARE_ENABLE_URL_UPLOAD: "true" })),
+    );
+    expect(names).toEqual([...READ_TOOLS].sort());
+  });
+
   it("finalize implies drafts: enabling finalize with drafts off still registers drafts", () => {
     // Guards against a config that exposes ONLY the irreversible create-finalized-*
     // tools (no safe draft path).
