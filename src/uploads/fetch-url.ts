@@ -15,16 +15,30 @@ const DEFAULT_MAX_REDIRECTS = 3;
 export const DEFAULT_ALLOWED_HOSTS = ["sharepoint.com", "onedrive.live.com", "1drv.ms", "graph.microsoft.com"];
 
 /**
+ * A host name reduced to its comparable form: trimmed, case-folded, and with the
+ * trailing root-label dot removed (`example.com.` and `example.com` are the same name;
+ * `new URL()` keeps the dot, so it reaches here).
+ *
+ * Used on BOTH sides of the comparison in {@link isAllowedHost}. A normalization applied
+ * to only one side is one that fails whenever the *other* side carries the odd spelling.
+ *
+ * Exactly one trailing dot, not `/\.+$/`: a second dot makes an empty DNS label, so
+ * `example.com..` is not another spelling of the same name and must not be folded into
+ * one — this step exists to equate equivalent names, not to repair malformed ones.
+ */
+function normalizeHostForMatch(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+/**
  * True when `hostname` is exactly one of `allowed`, or a subdomain of one of them
  * (matched on a dot boundary — "evilsharepoint.com" must NOT match "sharepoint.com").
- * Case-insensitive; a trailing dot on `hostname` (a valid DNS root-label terminator) is
- * stripped before comparison.
+ * Case-insensitive, and a trailing root-label dot on either side is ignored.
  */
 export function isAllowedHost(hostname: string, allowed: string[]): boolean {
-  let host = hostname.trim().toLowerCase();
-  if (host.endsWith(".")) host = host.slice(0, -1);
+  const host = normalizeHostForMatch(hostname);
   for (const entry of allowed) {
-    const suffix = entry.trim().toLowerCase();
+    const suffix = normalizeHostForMatch(entry);
     if (!suffix) continue;
     if (host === suffix || host.endsWith(`.${suffix}`)) return true;
   }

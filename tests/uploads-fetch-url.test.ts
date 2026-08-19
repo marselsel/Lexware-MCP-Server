@@ -75,6 +75,31 @@ describe("isAllowedHost", () => {
     expect(isAllowedHost("FOO.SharePoint.COM", DEFAULT_ALLOWED_HOSTS)).toBe(true);
     expect(isAllowedHost("sharepoint.com.", DEFAULT_ALLOWED_HOSTS)).toBe(true);
   });
+
+  it("ignores a trailing root-label dot on a CONFIGURED ENTRY too, not only on the hostname", () => {
+    // The normalization used to run on the hostname alone, so an operator who wrote the
+    // fully-qualified form in LEXWARE_UPLOAD_ALLOWED_HOSTS silently blocked the very host
+    // they meant to allow — the same failure mode as the leading dot fixed in 0.1.12,
+    // arriving from the other end of the name.
+    expect(isAllowedHost("contoso.sharepoint.com", ["sharepoint.com."])).toBe(true);
+    expect(isAllowedHost("sharepoint.com", ["sharepoint.com."])).toBe(true);
+    // Odd spelling on both sides at once still resolves to the same name.
+    expect(isAllowedHost("contoso.sharepoint.com.", ["sharepoint.com."])).toBe(true);
+    expect(isAllowedHost("  SharePoint.COM.  ", ["  .. "])).toBe(false);
+  });
+
+  it("still refuses a lookalike when the entry carries a trailing dot — the dot is not a wildcard", () => {
+    expect(isAllowedHost("evilsharepoint.com", ["sharepoint.com."])).toBe(false);
+    expect(isAllowedHost("sharepoint.com.evil.com", ["sharepoint.com."])).toBe(false);
+  });
+
+  it("does not fold a DOUBLE trailing dot into the same name — that is an empty label, not a spelling", () => {
+    // `example.com..` is malformed rather than equivalent, and this step exists to equate
+    // equivalent names, not to repair broken ones. Widening it would quietly grow what the
+    // allow-list accepts.
+    expect(isAllowedHost("sharepoint.com..", DEFAULT_ALLOWED_HOSTS)).toBe(false);
+    expect(isAllowedHost("sharepoint.com", ["sharepoint.com.."])).toBe(false);
+  });
 });
 
 describe("fetchRemoteFile", () => {
