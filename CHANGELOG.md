@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A trailing root-label dot on an allow-list ENTRY no longer silently blocks everything.**
+  `isAllowedHost` normalized the incoming hostname (trim, case-fold, strip the trailing dot) but
+  only trimmed and case-folded the configured entries, so
+  `LEXWARE_UPLOAD_ALLOWED_HOSTS=sharepoint.com.` matched nothing and blocked the very host it was
+  meant to allow. Both sides now go through the same normalization, so they cannot drift again. This
+  is the same failure mode as the leading dot fixed in 0.1.12, arriving from the other end of the
+  name; raised by the review bot on [#39] and not carried over at the time. A double trailing dot is
+  deliberately NOT folded — that is an empty DNS label, i.e. a malformed name rather than another
+  spelling of the same one.
+
 ## [0.1.13]
 
 Robustness fixes surfaced by a full security audit and code-review pass of the server. No
