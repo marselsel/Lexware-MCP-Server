@@ -77,6 +77,20 @@ export const VOUCHER_STATUSES = [
 ] as const;
 export type VoucherStatus = (typeof VOUCHER_STATUSES)[number];
 
+/**
+ * Fields `GET /v1/voucherlist` can sort by. Probed against the live API: each of these
+ * returns 200, and anything else fails with `parameter 'sort' is invalid`. Lexware
+ * takes the direction in the same parameter (`field,ASC` / `field,DESC`) and defaults
+ * to `voucherDate` descending when `sort` is omitted.
+ */
+export const VOUCHERLIST_SORT_FIELDS = [
+  "voucherDate",
+  "voucherNumber",
+  "createdDate",
+  "updatedDate",
+] as const;
+export type VoucherlistSortField = (typeof VOUCHERLIST_SORT_FIELDS)[number];
+
 /** A single row from the voucherlist index. */
 export interface VoucherlistEntry {
   id: string;

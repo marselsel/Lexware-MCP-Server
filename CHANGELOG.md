@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`get-voucherlist` can now answer "what changed since ...?" and "which document is RE0069?".** The
+  endpoint has always accepted `createdDateFrom/To`, `updatedDateFrom/To`, `voucherNumber` and `sort`;
+  the tool exposed none of them. Without the created/updated bounds an incremental sync was
+  impossible, because `voucherDate` is the document's own date, which the user sets and often
+  backdates. Without `voucherNumber` the only way to find a document by its number was to page the
+  whole list. `sortBy` + `sortDirection` compose into Lexware's single `sort` parameter, and a
+  direction without a field is rejected rather than silently dropped (that would hand back the DESC
+  default to a caller who asked for ASC). `summarize-vouchers` gets the same date bounds.
+
 ### Fixed
 - **The voucherlist no longer advertises three filter values the API rejects, and can now reach the
   receipt inbox.** Probed every value individually against the live API: `voucherType` `dunning` and
@@ -16,6 +26,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   way to find an uncategorized receipt was to page the whole voucherlist under `any` and filter
   client-side. Dunnings and recurring templates are unaffected — they were never voucherlist rows and
   are still reached via `get-dunning` / `get-document` and `list-recurring-templates`.
+- **The voucherlist date filters are documented as `yyyy-MM-dd`, which is all they accept.** The
+  descriptions said "ISO date"; passing the full ISO datetime that the create tools use for
+  `voucherDate` gets a 400, so the wording was inviting the error.
 - **`taxConditions.taxType` no longer suggests a value the API rejects.** The description offered
   `thirdPartyCountry`, which does not exist; the real values are the separate
   `thirdPartyCountryService` and `thirdPartyCountryDelivery`. It now lists all nine accepted values
