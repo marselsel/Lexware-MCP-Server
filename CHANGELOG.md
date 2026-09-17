@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`voucherType` and `voucherStatus` take several values at once.** Lexware accepts a
+  comma-separated list; the tools only ever sent one value, so "open and paid invoices" meant two
+  calls and a client-side merge. Both now accept a single value, an array, or the comma-separated
+  string itself (the API's own wire format). Every element is still validated against the enum rather
+  than passed through as a free string, which is load-bearing: an empty entry (`open,,paid`) makes
+  Lexware answer **HTTP 500**, so it is rejected locally instead. The two combinations Lexware refuses
+  — `any` with anything else, and `overdue`, which it derives from the due date rather than storing —
+  are caught before a request is spent, with an error that says why.
 - **`get-voucherlist` can now answer "what changed since ...?" and "which document is RE0069?".** The
   endpoint has always accepted `createdDateFrom/To`, `updatedDateFrom/To`, `voucherNumber` and `sort`;
   the tool exposed none of them. Without the created/updated bounds an incremental sync was

@@ -112,6 +112,79 @@ function summaryGroupKey(row: VoucherlistEntry, groupBy: (typeof SUMMARY_GROUP_B
 }
 
 /**
+ * A voucherlist `voucherType` / `voucherStatus` filter.
+ *
+ * Lexware accepts one value or a comma-separated list, so this takes either a single
+ * enum value or an array of them. It also tolerates the comma-separated string itself,
+ * because that is the API's own wire format and a plausible thing for a caller to
+ * reach for, and a JSON-encoded array, for clients that serialise array arguments as
+ * strings.
+ *
+ * Deliberately NOT a free string: an empty entry (`open,,paid`) makes Lexware answer
+ * HTTP 500, so every part is validated against the enum before a request is spent on
+ * it. The published JSON Schema is an `anyOf` of the two branches, so the allowed
+ * values stay visible to the model in both.
+ */
+function voucherFilterParam<const T extends readonly [string, ...string[]]>(values: T) {
+  return z.preprocess(
+    (raw) => {
+      if (typeof raw !== "string") return raw;
+      const value = raw.trim();
+      if (value.startsWith("[")) {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return raw; // leave as-is so Zod reports a precise error
+        }
+      }
+      return value.includes(",") ? value.split(",").map((part) => part.trim()) : value;
+    },
+    // `.default` belongs INSIDE the preprocess wrapper. Applied outside it lands on a
+    // ZodPipe, and zod does not carry a pipe's default into the published input JSON
+    // Schema — the runtime default still works, but the model stops being told that
+    // "any" is the default, which is the only reason it is declared. Same convention
+    // as `jsonNum(z.number().int().default(40))` elsewhere in this file.
+    z.union([z.enum(values), z.array(z.enum(values)).min(1)]).default("any" as T[number]),
+  );
+}
+
+/**
+ * Values Lexware refuses to combine with anything else in the same filter: `any`
+ * already means "all", and `overdue` is derived from the due date rather than stored.
+ * Both come back as a 400 naming the value, so they are caught here instead of costing
+ * a request.
+ */
+const UNCOMBINABLE_VOUCHER_FILTER_VALUES = new Set(["any", "overdue"]);
+
+/**
+ * Collapse a type/status filter into the single comma-separated value Lexware takes.
+ *
+ * Total by construction, like the `format` resolution in the file download: an empty
+ * result degrades to `"any"` rather than to the empty string. That matters because
+ * `buildUrl` omits only `undefined`, so `""` would go on the wire as `voucherType=`,
+ * and an empty filter value is exactly what makes Lexware answer HTTP 500 instead of a
+ * 400. The zod layer supplies the default in production, but nothing downstream should
+ * depend on that having happened.
+ */
+function voucherFilterValue(value: string | string[] | undefined, field: string): string {
+  // De-duplicate first, so ["any", "any"] reads as the plain "any" it means rather
+  // than tripping the combination check below.
+  const given = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const parts = [...new Set(given)].filter((part) => part !== "");
+  if (parts.length === 0) return "any";
+  const blocking = parts.find((part) => UNCOMBINABLE_VOUCHER_FILTER_VALUES.has(part));
+  if (parts.length > 1 && blocking !== undefined) {
+    throw new Error(
+      `${field} "${blocking}" cannot be combined with other values — pass it on its own.` +
+        (blocking === "any"
+          ? " 'any' already matches every value."
+          : " Lexware derives 'overdue' from the due date rather than storing it."),
+    );
+  }
+  return parts.join(",");
+}
+
+/**
  * Date-range filters `GET /v1/voucherlist` accepts.
  *
  * All six take `yyyy-MM-dd` ONLY. A full ISO datetime — the format the create tools
@@ -157,8 +230,12 @@ export function registerDocumentReadTools(
       description:
         "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus are required; use 'any' to match all. Results are paged. Filter by createdDate*/updatedDate* to see only what is new or changed since a given day, and by voucherNumber to look a single document up by its number.",
       inputSchema: {
-        voucherType: z.enum(VOUCHER_TYPES).default("any"),
-        voucherStatus: z.enum(VOUCHER_STATUSES).default("any"),
+        voucherType: voucherFilterParam(VOUCHER_TYPES)
+          .describe("One type, or several as an array/comma-separated list. 'any' must stand alone."),
+        voucherStatus: voucherFilterParam(VOUCHER_STATUSES)
+          .describe(
+            "One status, or several as an array/comma-separated list. 'any' and 'overdue' must each stand alone.",
+          ),
         contactId: z.string().optional(),
         voucherNumber: z
           .string()
@@ -206,8 +283,8 @@ export function registerDocumentReadTools(
         throw new Error("sortDirection requires sortBy — name the field to sort on.");
       }
       const result = await client.get<Paged<VoucherlistEntry>>("/v1/voucherlist", {
-        voucherType,
-        voucherStatus,
+        voucherType: voucherFilterValue(voucherType, "voucherType"),
+        voucherStatus: voucherFilterValue(voucherStatus, "voucherStatus"),
         contactId,
         voucherNumber,
         voucherDateFrom,
@@ -237,8 +314,12 @@ export function registerDocumentReadTools(
         "currency — the net/VAT split is not in the voucherlist, so this does not break out USt. " +
         "voucherType/voucherStatus default to 'any'.",
       inputSchema: {
-        voucherType: z.enum(VOUCHER_TYPES).default("any"),
-        voucherStatus: z.enum(VOUCHER_STATUSES).default("any"),
+        voucherType: voucherFilterParam(VOUCHER_TYPES)
+          .describe("One type, or several as an array/comma-separated list. 'any' must stand alone."),
+        voucherStatus: voucherFilterParam(VOUCHER_STATUSES)
+          .describe(
+            "One status, or several as an array/comma-separated list. 'any' and 'overdue' must each stand alone.",
+          ),
         contactId: z.string().optional(),
         ...VOUCHERLIST_DATE_FILTERS,
         archived: jsonBool(z.boolean().optional()),
@@ -280,8 +361,8 @@ export function registerDocumentReadTools(
       // regardless of how many vouchers match.
       for (;;) {
         const res = await client.get<Paged<VoucherlistEntry>>("/v1/voucherlist", {
-          voucherType,
-          voucherStatus,
+          voucherType: voucherFilterValue(voucherType, "voucherType"),
+          voucherStatus: voucherFilterValue(voucherStatus, "voucherStatus"),
           contactId,
           voucherDateFrom,
           voucherDateTo,
