@@ -30,17 +30,24 @@ interface DocType {
   schema: ZodRawShapeCompat | null;
   /** Whether `?finalize=true` issuing is supported. */
   finalize: boolean;
+  /**
+   * Whether this document can ever be an e-invoice, i.e. whether asking for its file
+   * as XML is a sensible thing to do. Only invoices, credit notes and down payment
+   * invoices can; for every other type `electronicDocumentProfile` is always `NONE`,
+   * so offering the choice could only ever produce a failure.
+   */
+  eInvoice: boolean;
 }
 
 const DOC_TYPES: DocType[] = [
-  { key: "invoice", path: "invoices", label: "invoice", schema: invoiceInputShape, finalize: true },
-  { key: "quotation", path: "quotations", label: "quotation", schema: quotationInputShape, finalize: true },
-  { key: "credit-note", path: "credit-notes", label: "credit note", schema: genericDocumentInputShape, finalize: true },
-  { key: "order-confirmation", path: "order-confirmations", label: "order confirmation", schema: genericDocumentInputShape, finalize: true },
-  { key: "delivery-note", path: "delivery-notes", label: "delivery note", schema: genericDocumentInputShape, finalize: true },
-  { key: "dunning", path: "dunnings", label: "dunning", schema: genericDocumentInputShape, finalize: true },
+  { key: "invoice", path: "invoices", label: "invoice", schema: invoiceInputShape, finalize: true, eInvoice: true },
+  { key: "quotation", path: "quotations", label: "quotation", schema: quotationInputShape, finalize: true, eInvoice: false },
+  { key: "credit-note", path: "credit-notes", label: "credit note", schema: genericDocumentInputShape, finalize: true, eInvoice: true },
+  { key: "order-confirmation", path: "order-confirmations", label: "order confirmation", schema: genericDocumentInputShape, finalize: true, eInvoice: false },
+  { key: "delivery-note", path: "delivery-notes", label: "delivery note", schema: genericDocumentInputShape, finalize: true, eInvoice: false },
+  { key: "dunning", path: "dunnings", label: "dunning", schema: genericDocumentInputShape, finalize: true, eInvoice: false },
   // down-payment-invoices are GET-only (no create/finalize) but still have a finalized PDF via /{id}/file.
-  { key: "down-payment-invoice", path: "down-payment-invoices", label: "down payment invoice", schema: null, finalize: false },
+  { key: "down-payment-invoice", path: "down-payment-invoices", label: "down payment invoice", schema: null, finalize: false, eInvoice: true },
 ];
 
 /** Document resource paths — the `resourceType` enum for get-document-file. */
@@ -99,6 +106,12 @@ const VOUCHERTYPE_TO_PATH: Record<string, string> = {
  * PDF-only download can hand back nothing but the preview for exactly the profile
  * where the distinction is legally load-bearing.
  */
+/**
+ * Resources whose `/file` subresource can serve XML. Everything else always reports
+ * `electronicDocumentProfile: "NONE"`, so XML is not merely absent, it is impossible.
+ */
+const E_INVOICE_RESOURCES = new Set(["invoices", "credit-notes", "down-payment-invoices"]);
+
 const DOCUMENT_FILE_ACCEPT = {
   pdf: "application/pdf",
   xml: "application/xml",
@@ -128,6 +141,16 @@ async function fetchDocumentFile(
   id: string,
   format: DocumentFileFormat,
 ): Promise<{ data: Buffer; contentType: string }> {
+  // Refuse before spending a request when the resource can never have XML at all.
+  // get-document-file picks its resource at call time, so this cannot be expressed in
+  // the schema the way the render-* tools do it.
+  if (format === "xml" && !E_INVOICE_RESOURCES.has(resource)) {
+    throw new Error(
+      `A document in /${resource} never has an e-invoice XML: Lexware serves XML only for invoices, ` +
+        `credit notes and down payment invoices, and only when the document is an XRechnung. ` +
+        `Use format="pdf".`,
+    );
+  }
   try {
     return await client.getBinary(
       `/v1/${resource}/${encodeURIComponent(id)}/file`,
@@ -135,10 +158,14 @@ async function fetchDocumentFile(
     );
   } catch (err) {
     if (format === "xml" && err instanceof LexwareApiError && err.status === 404) {
+      // Two different causes share this status, and the raw 404 names neither: the
+      // document may exist but have no standalone XML, or the id may simply be wrong.
+      // Naming only the first would send someone with a typo hunting through
+      // electronicDocumentProfile.
       throw new Error(
-        `No standalone XML for ${resource}/${id}. Lexware serves one only for an XRechnung; a ZUGFeRD ` +
-          `(EN16931) invoice has its XML embedded in the PDF, and a plain invoice has none. Check the ` +
-          `document's electronicDocumentProfile, and use format="pdf" otherwise.`,
+        `No XML returned for ${resource}/${id}. Either that document is not an XRechnung — a ZUGFeRD ` +
+          `(EN16931) invoice keeps its XML embedded in the PDF and a plain invoice has none, so check ` +
+          `electronicDocumentProfile and use format="pdf" — or no document exists with that id.`,
       );
     }
     throw err;
@@ -356,11 +383,18 @@ export function registerDocumentReadTools(
         // renaming a registered tool breaks every saved prompt and client config that
         // refers to it, which is a poor trade for a suffix. The description carries it.
         name: `render-${doc.key}-pdf`,
-        description:
-          `Download the finalized file of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
-          `inline — the PDF by default, or the e-invoice XML with format="xml" (XRechnung only). ` +
-          `The document must be FINALIZED — a draft has no file yet. (get-document-file is the generic form.)`,
-        inputSchema: { id: z.string(), format: documentFormatParam },
+        description: doc.eInvoice
+          ? `Download the finalized file of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
+            `inline — the PDF by default, or the e-invoice XML with format="xml" (XRechnung only). ` +
+            `The document must be FINALIZED — a draft has no file yet. (get-document-file is the generic form.)`
+          : `Download the finalized PDF of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
+            `inline. The document must be FINALIZED — a draft has no file yet. ` +
+            `(get-document-file is the generic form.)`,
+        // The format choice is offered only where XML is possible. A quotation, order
+        // confirmation, delivery note or dunning always reports
+        // `electronicDocumentProfile: "NONE"`, so advertising format="xml" there would be
+        // offering a choice that can only fail — the pattern #44 exists to remove.
+        inputSchema: doc.eInvoice ? { id: z.string(), format: documentFormatParam } : { id: z.string() },
         annotations: RO,
       },
       async ({ id, format }) => {
@@ -486,7 +520,7 @@ export function registerDocumentReadTools(
         structuredContent: {
           resource: resourceType,
           id,
-          format,
+          format: wanted,
           mimeType: contentType,
           byteLength: data.length,
         },

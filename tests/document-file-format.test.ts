@@ -6,12 +6,15 @@ import { registerDocumentReadTools } from "../src/tools/documents.js";
 
 type Handler = (input: Record<string, unknown>) => Promise<unknown>;
 
+const schemas: Record<string, Record<string, unknown>> = {};
+
 function setup(getBinary: LexwareClient["getBinary"]) {
   const client = { getBinary } as unknown as LexwareClient;
   const handlers: Record<string, Handler> = {};
   const server = {
-    registerTool(cfg: { name: string }, handler: Handler) {
+    registerTool(cfg: { name: string; inputSchema?: Record<string, unknown> }, handler: Handler) {
       handlers[cfg.name] = handler;
+      if (cfg.inputSchema) schemas[cfg.name] = cfg.inputSchema;
       return server;
     },
   } as unknown as McpServer;
@@ -82,7 +85,7 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
     });
     await expect(
       setup(notFound as never)["render-invoice-pdf"]({ id: "inv-1", format: "xml" }),
-    ).rejects.toThrow(/No standalone XML .* only for an XRechnung/s);
+    ).rejects.toThrow(/not an XRechnung .* embedded in the PDF/s);
   });
 
   it("leaves a 404 on a PDF request alone — there it really does mean not found", async () => {
@@ -92,6 +95,57 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
     await expect(
       setup(notFound as never)["render-invoice-pdf"]({ id: "nope", format: "pdf" }),
     ).rejects.toThrow(LexwareApiError);
+  });
+
+  it("offers format only where an e-invoice is possible", () => {
+    // A quotation, order confirmation, delivery note or dunning always reports
+    // electronicDocumentProfile "NONE", so advertising format="xml" on those tools
+    // would offer a choice that can only fail.
+    setup(pdfOk() as never);
+    for (const name of ["render-invoice-pdf", "render-credit-note-pdf", "render-down-payment-invoice-pdf"]) {
+      expect(Object.keys(schemas[name])).toContain("format");
+    }
+    for (const name of [
+      "render-quotation-pdf",
+      "render-order-confirmation-pdf",
+      "render-delivery-note-pdf",
+      "render-dunning-pdf",
+    ]) {
+      expect(Object.keys(schemas[name])).not.toContain("format");
+    }
+  });
+
+  it("refuses an XML request for a resource that can never have one, without a request", async () => {
+    const spy = pdfOk();
+    await expect(
+      setup(spy as never)["get-document-file"]({
+        resourceType: "quotations",
+        id: "q-1",
+        format: "xml",
+      }),
+    ).rejects.toThrow(/never has an e-invoice XML/);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("names both causes of the 404, not just the profile one", async () => {
+    // The same status covers "exists but has no standalone XML" and "no such id".
+    // Naming only the first sends someone with a typo hunting through the profile.
+    const notFound = vi.fn(async () => {
+      throw new LexwareApiError(404, "Not Found");
+    });
+    await expect(
+      setup(notFound as never)["render-invoice-pdf"]({ id: "typo", format: "xml" }),
+    ).rejects.toThrow(/no document exists with that id/);
+  });
+
+  it("reports the normalized format in get-document-file too, not the raw input", async () => {
+    // Its render-*-pdf twin normalized; this one echoed the raw value, so a call made
+    // without the zod default reported `format: undefined` beside PDF bytes.
+    const result = (await setup(pdfOk() as never)["get-document-file"]({
+      resourceType: "invoices",
+      id: "inv-1",
+    })) as { structuredContent: Record<string, unknown> };
+    expect(result.structuredContent.format).toBe("pdf");
   });
 
   it("leaves other errors alone, including a 409 draft", async () => {
