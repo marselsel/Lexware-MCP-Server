@@ -126,18 +126,26 @@ function summaryGroupKey(row: VoucherlistEntry, groupBy: (typeof SUMMARY_GROUP_B
  * values stay visible to the model in both.
  */
 function voucherFilterParam<const T extends readonly [string, ...string[]]>(values: T) {
-  return z.preprocess((raw) => {
-    if (typeof raw !== "string") return raw;
-    const value = raw.trim();
-    if (value.startsWith("[")) {
-      try {
-        return JSON.parse(value);
-      } catch {
-        return raw; // leave as-is so Zod reports a precise error
+  return z.preprocess(
+    (raw) => {
+      if (typeof raw !== "string") return raw;
+      const value = raw.trim();
+      if (value.startsWith("[")) {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return raw; // leave as-is so Zod reports a precise error
+        }
       }
-    }
-    return value.includes(",") ? value.split(",").map((part) => part.trim()) : value;
-  }, z.union([z.enum(values), z.array(z.enum(values)).min(1)]));
+      return value.includes(",") ? value.split(",").map((part) => part.trim()) : value;
+    },
+    // `.default` belongs INSIDE the preprocess wrapper. Applied outside it lands on a
+    // ZodPipe, and zod does not carry a pipe's default into the published input JSON
+    // Schema — the runtime default still works, but the model stops being told that
+    // "any" is the default, which is the only reason it is declared. Same convention
+    // as `jsonNum(z.number().int().default(40))` elsewhere in this file.
+    z.union([z.enum(values), z.array(z.enum(values)).min(1)]).default("any" as T[number]),
+  );
 }
 
 /**
@@ -148,11 +156,22 @@ function voucherFilterParam<const T extends readonly [string, ...string[]]>(valu
  */
 const UNCOMBINABLE_VOUCHER_FILTER_VALUES = new Set(["any", "overdue"]);
 
-/** Collapse a type/status filter into the single comma-separated value Lexware takes. */
-function voucherFilterValue(value: string | string[], field: string): string {
+/**
+ * Collapse a type/status filter into the single comma-separated value Lexware takes.
+ *
+ * Total by construction, like the `format` resolution in the file download: an empty
+ * result degrades to `"any"` rather than to the empty string. That matters because
+ * `buildUrl` omits only `undefined`, so `""` would go on the wire as `voucherType=`,
+ * and an empty filter value is exactly what makes Lexware answer HTTP 500 instead of a
+ * 400. The zod layer supplies the default in production, but nothing downstream should
+ * depend on that having happened.
+ */
+function voucherFilterValue(value: string | string[] | undefined, field: string): string {
   // De-duplicate first, so ["any", "any"] reads as the plain "any" it means rather
   // than tripping the combination check below.
-  const parts = [...new Set(Array.isArray(value) ? value : [value])];
+  const given = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const parts = [...new Set(given)].filter((part) => part !== "");
+  if (parts.length === 0) return "any";
   const blocking = parts.find((part) => UNCOMBINABLE_VOUCHER_FILTER_VALUES.has(part));
   if (parts.length > 1 && blocking !== undefined) {
     throw new Error(
@@ -212,10 +231,8 @@ export function registerDocumentReadTools(
         "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus are required; use 'any' to match all. Results are paged. Filter by createdDate*/updatedDate* to see only what is new or changed since a given day, and by voucherNumber to look a single document up by its number.",
       inputSchema: {
         voucherType: voucherFilterParam(VOUCHER_TYPES)
-          .default("any")
           .describe("One type, or several as an array/comma-separated list. 'any' must stand alone."),
         voucherStatus: voucherFilterParam(VOUCHER_STATUSES)
-          .default("any")
           .describe(
             "One status, or several as an array/comma-separated list. 'any' and 'overdue' must each stand alone.",
           ),
@@ -298,10 +315,8 @@ export function registerDocumentReadTools(
         "voucherType/voucherStatus default to 'any'.",
       inputSchema: {
         voucherType: voucherFilterParam(VOUCHER_TYPES)
-          .default("any")
           .describe("One type, or several as an array/comma-separated list. 'any' must stand alone."),
         voucherStatus: voucherFilterParam(VOUCHER_STATUSES)
-          .default("any")
           .describe(
             "One status, or several as an array/comma-separated list. 'any' and 'overdue' must each stand alone.",
           ),

@@ -86,6 +86,22 @@ describe("voucherlist type/status filter — the zod layer", () => {
     expect(parsed.voucherStatus).toBe("any");
     expect(parsed.voucherType).toBe("any");
   });
+
+  it("PUBLISHES that default in the JSON Schema, not just at runtime", () => {
+    // `.default()` has to sit inside the preprocess wrapper. Applied outside it lands
+    // on a ZodPipe, and zod drops a pipe's default from the input JSON Schema: the
+    // runtime default keeps working, so every parse test above still passes, while the
+    // model silently stops being told what the default is — which is the only reason
+    // it is declared. This asserts the published annotation, not the behaviour.
+    const { schemas } = setup();
+    const published = z.toJSONSchema(z.object(schemas["get-voucherlist"]), { io: "input" }) as {
+      properties: Record<string, { default?: unknown; anyOf?: unknown[] }>;
+    };
+    expect(published.properties.voucherType.default).toBe("any");
+    expect(published.properties.voucherStatus.default).toBe("any");
+    // ...and the two branches are still both visible, with their allowed values.
+    expect(published.properties.voucherStatus.anyOf).toHaveLength(2);
+  });
 });
 
 describe("voucherlist type/status filter — the request it builds", () => {
@@ -129,6 +145,24 @@ describe("voucherlist type/status filter — the request it builds", () => {
     const { handlers, get } = setup();
     await handlers["get-voucherlist"]({ voucherType: "any", voucherStatus: ["any", "any"] });
     expect(query(get).voucherStatus).toBe("any");
+  });
+
+  it("never sends an empty filter value, whatever it is handed", async () => {
+    // An empty value is not a 400, it is an HTTP 500 ("A technical error has
+    // occurred"), and buildUrl only omits `undefined` — so `""` would reach the wire
+    // as `voucherType=`. The zod layer supplies the default in production, but this
+    // handler is driven directly in tests and must not depend on that.
+    const { handlers, get } = setup();
+    await handlers["get-voucherlist"]({});
+    const q = query(get);
+    expect(q.voucherType).toBe("any");
+    expect(q.voucherStatus).toBe("any");
+    for (const empty of [[], [""], "", undefined]) {
+      const fresh = setup();
+      await fresh.handlers["get-voucherlist"]({ voucherType: empty, voucherStatus: empty });
+      expect(query(fresh.get).voucherType).toBe("any");
+      expect(query(fresh.get).voucherStatus).toBe("any");
+    }
   });
 
   it("applies the same joining to summarize-vouchers", async () => {
