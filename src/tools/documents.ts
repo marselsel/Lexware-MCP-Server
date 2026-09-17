@@ -2,7 +2,13 @@ import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-com
 import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
-import { type Paged, VOUCHER_STATUSES, VOUCHER_TYPES, type VoucherlistEntry } from "../lexware/types.js";
+import {
+  type Paged,
+  VOUCHER_STATUSES,
+  VOUCHER_TYPES,
+  VOUCHERLIST_SORT_FIELDS,
+  type VoucherlistEntry,
+} from "../lexware/types.js";
 import {
   additionalFieldsParam,
   genericDocumentInputShape,
@@ -105,6 +111,40 @@ function summaryGroupKey(row: VoucherlistEntry, groupBy: (typeof SUMMARY_GROUP_B
   }
 }
 
+/**
+ * Date-range filters `GET /v1/voucherlist` accepts.
+ *
+ * All six take `yyyy-MM-dd` ONLY. A full ISO datetime — the format the create tools
+ * use for `voucherDate`, so an easy mistake to carry over — is rejected with a 400.
+ * Both bounds are inclusive full days (Lexware made the `…To` bounds inclusive in
+ * August 2026).
+ *
+ * `voucherDate*` filters on the document's own date, which the user sets and often
+ * backdates. `createdDate*` and `updatedDate*` filter on when Lexware itself saw the
+ * row, which is what an incremental sync needs ("what changed since my last run") and
+ * what `voucherDate` cannot answer.
+ */
+const VOUCHERLIST_DATE_FILTERS = {
+  voucherDateFrom: z.string().optional().describe("Document-date lower bound, yyyy-MM-dd (inclusive)."),
+  voucherDateTo: z.string().optional().describe("Document-date upper bound, yyyy-MM-dd (inclusive)."),
+  createdDateFrom: z
+    .string()
+    .optional()
+    .describe("Lower bound on when the row was CREATED in Lexware, yyyy-MM-dd (inclusive)."),
+  createdDateTo: z
+    .string()
+    .optional()
+    .describe("Upper bound on when the row was CREATED in Lexware, yyyy-MM-dd (inclusive)."),
+  updatedDateFrom: z
+    .string()
+    .optional()
+    .describe("Lower bound on when the row was LAST CHANGED, yyyy-MM-dd (inclusive)."),
+  updatedDateTo: z
+    .string()
+    .optional()
+    .describe("Upper bound on when the row was LAST CHANGED, yyyy-MM-dd (inclusive)."),
+} as const;
+
 /** Read tools for financial documents. Always registered. */
 export function registerDocumentReadTools(
   server: McpServer,
@@ -115,26 +155,69 @@ export function registerDocumentReadTools(
     {
       name: "get-voucherlist",
       description:
-        "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus are required; use 'any' to match all. Results are paged.",
+        "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus are required; use 'any' to match all. Results are paged. Filter by createdDate*/updatedDate* to see only what is new or changed since a given day, and by voucherNumber to look a single document up by its number.",
       inputSchema: {
         voucherType: z.enum(VOUCHER_TYPES).default("any"),
         voucherStatus: z.enum(VOUCHER_STATUSES).default("any"),
         contactId: z.string().optional(),
-        voucherDateFrom: z.string().optional().describe("ISO date lower bound."),
-        voucherDateTo: z.string().optional().describe("ISO date upper bound."),
+        voucherNumber: z
+          .string()
+          .optional()
+          .describe(
+            'Exact voucher number, e.g. "RE0069". Matches the WHOLE number only — a prefix or ' +
+              "substring returns nothing. This is the only way to find a document by its number; " +
+              "there is no search-by-number endpoint.",
+          ),
+        ...VOUCHERLIST_DATE_FILTERS,
+        sortBy: z
+          .enum(VOUCHERLIST_SORT_FIELDS)
+          .optional()
+          .describe("Field to sort by. Omit for Lexware's default, which is voucherDate newest-first."),
+        sortDirection: z
+          .enum(["ASC", "DESC"])
+          .optional()
+          .describe("Sort direction. Requires sortBy; on its own it has nothing to sort."),
         archived: jsonBool(z.boolean().optional()),
         page: pageParam,
         size: sizeParam,
       },
       annotations: RO,
     },
-    async ({ voucherType, voucherStatus, contactId, voucherDateFrom, voucherDateTo, archived, page, size }) => {
+    async ({
+      voucherType,
+      voucherStatus,
+      contactId,
+      voucherNumber,
+      voucherDateFrom,
+      voucherDateTo,
+      createdDateFrom,
+      createdDateTo,
+      updatedDateFrom,
+      updatedDateTo,
+      sortBy,
+      sortDirection,
+      archived,
+      page,
+      size,
+    }) => {
+      // Fail here rather than silently dropping the direction: a caller who asked for
+      // ASC and got Lexware's DESC default would read the wrong end of the list.
+      if (sortDirection && !sortBy) {
+        throw new Error("sortDirection requires sortBy — name the field to sort on.");
+      }
       const result = await client.get<Paged<VoucherlistEntry>>("/v1/voucherlist", {
         voucherType,
         voucherStatus,
         contactId,
+        voucherNumber,
         voucherDateFrom,
         voucherDateTo,
+        createdDateFrom,
+        createdDateTo,
+        updatedDateFrom,
+        updatedDateTo,
+        // Lexware carries the direction inside `sort` itself, as "field" or "field,DIR".
+        sort: sortBy === undefined ? undefined : sortDirection ? `${sortBy},${sortDirection}` : sortBy,
         archived,
         page,
         size,
@@ -157,8 +240,7 @@ export function registerDocumentReadTools(
         voucherType: z.enum(VOUCHER_TYPES).default("any"),
         voucherStatus: z.enum(VOUCHER_STATUSES).default("any"),
         contactId: z.string().optional(),
-        voucherDateFrom: z.string().optional().describe("ISO date lower bound."),
-        voucherDateTo: z.string().optional().describe("ISO date upper bound."),
+        ...VOUCHERLIST_DATE_FILTERS,
         archived: jsonBool(z.boolean().optional()),
         groupBy: z
           .enum(SUMMARY_GROUP_BY)
@@ -176,6 +258,10 @@ export function registerDocumentReadTools(
       contactId,
       voucherDateFrom,
       voucherDateTo,
+      createdDateFrom,
+      createdDateTo,
+      updatedDateFrom,
+      updatedDateTo,
       archived,
       groupBy,
       maxPages,
@@ -199,6 +285,10 @@ export function registerDocumentReadTools(
           contactId,
           voucherDateFrom,
           voucherDateTo,
+          createdDateFrom,
+          createdDateTo,
+          updatedDateFrom,
+          updatedDateTo,
           archived,
           page,
           size: SIZE,

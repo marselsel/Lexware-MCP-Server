@@ -6,7 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`get-voucherlist` can now answer "what changed since ...?" and "which document is RE0069?".** The
+  endpoint has always accepted `createdDateFrom/To`, `updatedDateFrom/To`, `voucherNumber` and `sort`;
+  the tool exposed none of them. Without the created/updated bounds an incremental sync was
+  impossible, because `voucherDate` is the document's own date, which the user sets and often
+  backdates. Without `voucherNumber` the only way to find a document by its number was to page the
+  whole list. `sortBy` + `sortDirection` compose into Lexware's single `sort` parameter, and a
+  direction without a field is rejected rather than silently dropped (that would hand back the DESC
+  default to a caller who asked for ASC). `summarize-vouchers` gets the same date bounds.
+
 ### Fixed
+- **The voucherlist date filters are documented as `yyyy-MM-dd`, which is all they accept.** The
+  descriptions said "ISO date"; passing the full ISO datetime that the create tools use for
+  `voucherDate` gets a 400, so the wording was inviting the error.
 - **A trailing root-label dot on an allow-list ENTRY no longer silently blocks everything.**
   `isAllowedHost` normalized the incoming hostname (trim, case-fold, strip the trailing dot) but
   only trimmed and case-folded the configured entries, so
