@@ -337,12 +337,19 @@ export function registerDocumentReadTools(
       const grandOpen = round2(groupList.reduce((s, g) => s + g.sumOpenAmount, 0));
       return {
         structuredContent: {
+          // Every filter that narrowed the scan has to appear here: this block is what
+          // a caller reads back to caption the total, so a bound that is applied but
+          // not echoed turns an honest number into a mislabelled one.
           filters: {
             voucherType,
             voucherStatus,
             contactId,
             voucherDateFrom,
             voucherDateTo,
+            createdDateFrom,
+            createdDateTo,
+            updatedDateFrom,
+            updatedDateTo,
             archived,
             groupBy,
           },

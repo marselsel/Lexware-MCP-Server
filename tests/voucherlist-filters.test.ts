@@ -123,4 +123,24 @@ describe("summarize-vouchers filters", () => {
     expect(q.createdDateFrom).toBe("2026-09-01");
     expect(q.updatedDateTo).toBe("2026-09-17");
   });
+
+  it("echoes them back in `filters`, so the total is not captioned as unrestricted", async () => {
+    // The filters block is what a caller reads back to label the number. A bound that
+    // is applied to the scan but missing from the echo turns an honest total into a
+    // mislabelled one ("all time" over a one-week window).
+    const { handlers } = setup();
+    const result = (await handlers["summarize-vouchers"]({
+      voucherType: "any",
+      voucherStatus: "any",
+      groupBy: "none",
+      maxPages: 1,
+      createdDateFrom: "2026-09-01",
+      updatedDateTo: "2026-09-17",
+    })) as { structuredContent: { filters: Record<string, unknown> } };
+    expect(result.structuredContent.filters.createdDateFrom).toBe("2026-09-01");
+    expect(result.structuredContent.filters.updatedDateTo).toBe("2026-09-17");
+    for (const key of ["createdDateFrom", "createdDateTo", "updatedDateFrom", "updatedDateTo"]) {
+      expect(key in result.structuredContent.filters).toBe(true);
+    }
+  });
 });
