@@ -1,6 +1,7 @@
 import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
+import { encodeSearchFilter } from "../lexware/search.js";
 import type { Paged } from "../lexware/types.js";
 import {
   additionalFieldsParam,
@@ -23,8 +24,22 @@ export function registerContactReadTools(server: McpServer, client: LexwareClien
       description:
         "List/search contacts (customers and vendors). Optional filters; results are paged (use page/size).",
       inputSchema: {
-        email: z.string().min(3).optional().describe("Substring match, min 3 chars."),
-        name: z.string().min(3).optional().describe("Substring match, min 3 chars."),
+        email: z
+          .string()
+          .min(3)
+          .optional()
+          .describe(
+            "Substring match, min 3 chars. Case-insensitive; Lexware also accepts SQL-style " +
+              "wildcards, `_` for one character and `%` for any run.",
+          ),
+        name: z
+          .string()
+          .min(3)
+          .optional()
+          .describe(
+            "Substring match, min 3 chars. Case-insensitive; Lexware also accepts SQL-style " +
+              "wildcards, `_` for one character and `%` for any run.",
+          ),
         number: jsonNum(z.number().int().optional()).describe("Contact number."),
         customer: jsonBool(z.boolean().optional()),
         vendor: jsonBool(z.boolean().optional()),
@@ -35,8 +50,12 @@ export function registerContactReadTools(server: McpServer, client: LexwareClien
     },
     async ({ email, name, number, customer, vendor, page, size }) => {
       const result = await client.get<Paged<Record<string, unknown>>>("/v1/contacts", {
-        email,
-        name,
+        // `&`, `<` and `>` have to be HTML-encoded on top of the URL encoding the
+        // client already applies, or Lexware matches nothing at all. See
+        // encodeSearchFilter for the verification. Only these two params are search
+        // strings; `number`, `customer` and `vendor` must NOT go through it.
+        email: encodeSearchFilter(email),
+        name: encodeSearchFilter(name),
         number,
         customer,
         vendor,
