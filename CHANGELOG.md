@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **A contact whose name contains `&`, `<` or `>` can be found again.** Lexware requires those three
+  characters to be HTML-encoded *on top of* the URL encoding in the contacts search filters, so
+  `name=johnson & partner` has to go out as the value `johnson &amp; partner`. The client only
+  URL-encoded, and Lexware then matched nothing at all. The failure was silent, which is the bad
+  part: an empty result set reads as "no such contact" rather than as an encoding problem, so a
+  perfectly real "Müller & Sohn" looked like it did not exist. Verified end to end against the live
+  API through the client's own URL builder: the encoded form returns the contact, the old form
+  returns zero. Applied only to `name` and `email` — Lexware documents that this encoding breaks
+  other parameters, so ids, numbers, dates, enums and `sort` are deliberately left alone. The two
+  descriptions also now mention the SQL-style `_` and `%` wildcards the filters accept.
 - **A trailing root-label dot on an allow-list ENTRY no longer silently blocks everything.**
   `isAllowedHost` normalized the incoming hostname (trim, case-fold, strip the trailing dot) but
   only trimmed and case-folded the configured entries, so
