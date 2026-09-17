@@ -110,6 +110,15 @@ describe("text-field descriptions carry Lexware's documented limits", () => {
     expect(describeOf("remark")).toMatch(/introduction/); // defers to it for both
   });
 
+  it("says how far Lexware's documentation for `language` actually goes", () => {
+    // It sits on the shared base shape, so it is offered on document types Lexware
+    // never documented it for. Kept deliberately (an unlisted language is
+    // undocumented, not impossible), so the description has to carry the caveat.
+    const language = describeOf("language");
+    expect(language).toMatch(/invoices, credit notes and order confirmations/);
+    expect(language).toMatch(/undocumented and may be ignored/);
+  });
+
   it("mentions the formatting Lexware accepts, which nobody would guess", () => {
     expect(describeOf("introduction")).toMatch(/\*\*bold\*\*/);
     expect(describeOf("introduction")).toMatch(/__italic__/);

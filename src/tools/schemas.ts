@@ -211,20 +211,30 @@ const baseDocumentShape = {
       "Closing text below the line items. Same 2000-character limit and formatting support as " +
         "introduction.",
     ),
+  // Both live on the shared base shape, so both appear on every document create tool.
+  // That is right for `printLayoutId`, which Lexware documents for sales voucher
+  // endpoints generally. For `language` it is broader than the documentation: only
+  // invoices, credit notes and order confirmations are named. It stays here rather than
+  // being gated per type, because unlike an XML download on a quotation — impossible,
+  // and gated for that reason — an unlisted `language` is merely undocumented: it may
+  // well work, and removing the option would be the more confident error of the two.
+  // The description says exactly how far the documentation goes.
   language: z
     .string()
     .optional()
     .describe(
       'Document language, e.g. "de" or "en" — this is how an English invoice is produced. ' +
-        "Documented for invoices, credit notes and order confirmations, and it needs an Invoicing " +
-        "Pro plan (check businessFeatures via get-profile). Omit to use the organization default.",
+        "Lexware documents it for invoices, credit notes and order confirmations; on quotations, " +
+        "delivery notes and dunnings it is undocumented and may be ignored. Needs an Invoicing Pro " +
+        "plan (check businessFeatures via get-profile). Omit to use the organization default.",
     ),
   printLayoutId: z
     .string()
     .optional()
     .describe(
-      "Print layout to render with. Ids come from get-print-layouts; needs an Invoicing Pro plan. " +
-        "Omit to use the organization's default layout.",
+      "Print layout to render with. Ids come from get-print-layouts; documented for sales voucher " +
+        "endpoints generally, and needs an Invoicing Pro plan. Omit to use the organization's " +
+        "default layout.",
     ),
 } as const;
 
