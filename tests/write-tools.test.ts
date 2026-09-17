@@ -286,7 +286,9 @@ describe("get-document dispatch + get-voucher-file", () => {
     expect(get).toHaveBeenCalledWith("/v1/vouchers/x");
     await handlers["get-document"]({ id: "y", voucherType: "quotation" });
     expect(get).toHaveBeenCalledWith("/v1/quotations/y");
-    // recurringtemplate is a real voucherlist type and must dispatch, not throw.
+    // recurringtemplate is not a valid voucherlist FILTER value (the API 400s on it, see
+    // voucherlist-enums.test.ts), but get-document takes a free string and still has to
+    // dispatch it to the recurring-templates endpoint rather than throw.
     await handlers["get-document"]({ id: "r", voucherType: "recurringtemplate" });
     expect(get).toHaveBeenCalledWith("/v1/recurring-templates/r");
     await expect(handlers["get-document"]({ id: "z", voucherType: "bogus" })).rejects.toThrow(
