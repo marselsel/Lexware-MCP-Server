@@ -2,6 +2,7 @@ import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-com
 import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
+import { LexwareApiError } from "../lexware/errors.js";
 import { type Paged, VOUCHER_STATUSES, VOUCHER_TYPES, type VoucherlistEntry } from "../lexware/types.js";
 import {
   additionalFieldsParam,
@@ -83,6 +84,66 @@ const VOUCHERTYPE_TO_PATH: Record<string, string> = {
   voucher: "vouchers",
   recurringtemplate: "recurring-templates",
 };
+
+/**
+ * `format` for the sales-voucher file downloads, mapped to the Accept header Lexware
+ * keys off. Verified against the live API:
+ *
+ *   Accept: application/pdf  -> the PDF, for every document profile
+ *   Accept: application/xml  -> the XML for an XRechnung; 404 for EN16931 (ZUGFeRD,
+ *                               whose XML is embedded in the PDF) and for a plain PDF
+ *   anything else            -> 406
+ *
+ * This is more than a convenience: Lexware's own documentation states that the PDF of
+ * an XRechnung "is not a valid e-invoice and should not be used as one", so a
+ * PDF-only download can hand back nothing but the preview for exactly the profile
+ * where the distinction is legally load-bearing.
+ */
+const DOCUMENT_FILE_ACCEPT = {
+  pdf: "application/pdf",
+  xml: "application/xml",
+} as const;
+
+type DocumentFileFormat = keyof typeof DOCUMENT_FILE_ACCEPT;
+
+const documentFormatParam = z
+  .enum(["pdf", "xml"])
+  .default("pdf")
+  .describe(
+    'File format. "xml" returns the e-invoice XML, which ONLY an XRechnung has: a ZUGFeRD ' +
+      "(EN16931) invoice carries its XML embedded inside the PDF, and a plain invoice has none. " +
+      "Check the document's electronicDocumentProfile before asking for xml.",
+  );
+
+/**
+ * Fetch a document's file in the requested format.
+ *
+ * A 404 on an XML request means "this document has no standalone XML", not "no such
+ * document" — the raw status reads as a missing document and would send the caller
+ * looking for the wrong problem, so it is translated into what actually happened.
+ */
+async function fetchDocumentFile(
+  client: LexwareClient,
+  resource: string,
+  id: string,
+  format: DocumentFileFormat,
+): Promise<{ data: Buffer; contentType: string }> {
+  try {
+    return await client.getBinary(
+      `/v1/${resource}/${encodeURIComponent(id)}/file`,
+      DOCUMENT_FILE_ACCEPT[format],
+    );
+  } catch (err) {
+    if (format === "xml" && err instanceof LexwareApiError && err.status === 404) {
+      throw new Error(
+        `No standalone XML for ${resource}/${id}. Lexware serves one only for an XRechnung; a ZUGFeRD ` +
+          `(EN16931) invoice has its XML embedded in the PDF, and a plain invoice has none. Check the ` +
+          `document's electronicDocumentProfile, and use format="pdf" otherwise.`,
+      );
+    }
+    throw err;
+  }
+}
 
 /** Dimensions `summarize-vouchers` can group totals by. */
 const SUMMARY_GROUP_BY = ["voucherType", "voucherStatus", "month", "contact", "currency", "none"] as const;
@@ -291,23 +352,35 @@ export function registerDocumentReadTools(
   for (const doc of DOC_TYPES) {
     server.registerTool(
       {
+        // The tool name keeps its `-pdf` suffix even though it can now also return XML:
+        // renaming a registered tool breaks every saved prompt and client config that
+        // refers to it, which is a poor trade for a suffix. The description carries it.
         name: `render-${doc.key}-pdf`,
         description:
-          `Download the finalized PDF of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it inline. ` +
+          `Download the finalized file of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
+          `inline — the PDF by default, or the e-invoice XML with format="xml" (XRechnung only). ` +
           `The document must be FINALIZED — a draft has no file yet. (get-document-file is the generic form.)`,
-        inputSchema: { id: z.string() },
+        inputSchema: { id: z.string(), format: documentFormatParam },
         annotations: RO,
       },
-      async ({ id }) => {
-        const { data, contentType } = await client.getBinary(
-          `/v1/${doc.path}/${encodeURIComponent(id)}/file`,
-        );
+      async ({ id, format }) => {
+        // Resolved here rather than relying on zod's default having been applied:
+        // anything that is not an explicit "xml" is the PDF, which keeps the handler
+        // total even when it is driven directly.
+        const wanted: DocumentFileFormat = format === "xml" ? "xml" : "pdf";
+        const { data, contentType } = await fetchDocumentFile(client, doc.path, id, wanted);
         return binaryResult({
-          uri: `lexware://${doc.path}/${id}/file`,
+          uri: `lexware://${doc.path}/${id}/file?format=${wanted}`,
           data,
           contentType,
-          structuredContent: { resource: doc.path, id, mimeType: contentType, byteLength: data.length },
-          message: `Downloaded ${doc.label} ${id} PDF (${data.length} bytes).`,
+          structuredContent: {
+            resource: doc.path,
+            id,
+            format: wanted,
+            mimeType: contentType,
+            byteLength: data.length,
+          },
+          message: `Downloaded ${doc.label} ${id} as ${wanted.toUpperCase()} (${data.length} bytes).`,
         });
       },
     );
@@ -393,24 +466,31 @@ export function registerDocumentReadTools(
     {
       name: "get-document-file",
       description:
-        "Download the finalized PDF of a document by resource + id (GET /v1/{resourceType}/{id}/file), returned " +
-        "inline. The document must be FINALIZED. resourceType is the REST path, e.g. 'invoices', 'credit-notes'.",
+        "Download the finalized file of a document by resource + id (GET /v1/{resourceType}/{id}/file), " +
+        "returned inline — the PDF by default, or the e-invoice XML with format=\"xml\" (XRechnung only). " +
+        "The document must be FINALIZED. resourceType is the REST path, e.g. 'invoices', 'credit-notes'.",
       inputSchema: {
         resourceType: z.enum(DOC_FILE_PATHS).describe("Document resource path, e.g. 'invoices', 'credit-notes'."),
         id: z.string(),
+        format: documentFormatParam,
       },
       annotations: RO,
     },
-    async ({ resourceType, id }) => {
-      const { data, contentType } = await client.getBinary(
-        `/v1/${resourceType}/${encodeURIComponent(id)}/file`,
-      );
+    async ({ resourceType, id, format }) => {
+      const wanted: DocumentFileFormat = format === "xml" ? "xml" : "pdf";
+      const { data, contentType } = await fetchDocumentFile(client, resourceType, id, wanted);
       return binaryResult({
-        uri: `lexware://${resourceType}/${id}/file`,
+        uri: `lexware://${resourceType}/${id}/file?format=${wanted}`,
         data,
         contentType,
-        structuredContent: { resource: resourceType, id, mimeType: contentType, byteLength: data.length },
-        message: `Downloaded ${resourceType} ${id} PDF (${data.length} bytes).`,
+        structuredContent: {
+          resource: resourceType,
+          id,
+          format,
+          mimeType: contentType,
+          byteLength: data.length,
+        },
+        message: `Downloaded ${resourceType} ${id} as ${wanted.toUpperCase()} (${data.length} bytes).`,
       });
     },
   );

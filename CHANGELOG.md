@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **The e-invoice XML is reachable: `format: "xml"` on `render-*-pdf` and `get-document-file`.** Both
+  tools hardcoded `Accept: application/pdf`, and for an XRechnung that is the wrong artifact — Lexware's
+  own documentation says the PDF of an XRechnung "is not a valid e-invoice and should not be used as
+  one". So the only thing the server could hand back for a public-sector invoice was the preview, with
+  no way to reach the XML that is the actual legal document. `getBinary` already took an accept type;
+  it is now threaded through as a two-value enum rather than a free header string. A 404 on an XML
+  request is translated: it means "this document has no standalone XML" (a ZUGFeRD invoice embeds its
+  XML in the PDF, a plain invoice has none), not "no such document", which is what the raw status
+  reads as. The tool names keep their `-pdf` suffix, since renaming a registered tool breaks every
+  saved prompt that refers to it.
+
 ### Fixed
 - **A trailing root-label dot on an allow-list ENTRY no longer silently blocks everything.**
   `isAllowedHost` normalized the incoming hostname (trim, case-fold, strip the trailing dot) but
