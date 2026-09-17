@@ -33,6 +33,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   XML in the PDF, a plain invoice has none), not "no such document", which is what the raw status
   reads as. The tool names keep their `-pdf` suffix, since renaming a registered tool breaks every
   saved prompt that refers to it.
+- **`language` and `printLayoutId` are typed on the document create tools.** Both are long-documented
+  Lexware fields — `language` is how an English invoice is produced, `printLayoutId` picks a layout
+  from the ones `get-print-layouts` already lists. Neither was declared, so the SDK's strip-mode
+  object dropped them and they were reachable only through the `additionalFields` escape hatch, which
+  works but requires knowing the field name. Both need an Invoicing Pro plan, which the descriptions
+  say. Typed fields keep winning over `additionalFields`, now covered by a test for these two.
+- **The document and article text fields document Lexware's limits and formatting support.** `title`
+  has an unusually short 25-character limit, `introduction` and `remark` allow 2000, and a line item's
+  `name` 255 with `description` 2000. Since May 2026 Lexware also renders `**bold**`, `__italic__` and
+  `- ` bullet lines in `introduction`, `remark`, a line item's `description` and an article's
+  `description` (but not an article's `title`) — worth stating, because nobody would guess it. These
+  are descriptions rather than `.max()` constraints on purpose: the numbers are vendor-documented and
+  unverified against a live write, and a wrong number in a description cannot reject a valid document
+  the way a wrong `.max()` would.
 
 ### Fixed
 - **The voucherlist no longer advertises three filter values the API rejects, and can now reach the

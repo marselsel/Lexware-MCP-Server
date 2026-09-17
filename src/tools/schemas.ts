@@ -113,8 +113,14 @@ export const moneySchema = z
 export const lineItemSchema = z
   .object({
     type: z.string().describe('Line type, e.g. "custom", "material", "service", "text".'),
-    name: z.string(),
-    description: z.string().optional(),
+    name: z.string().describe("Position name. Lexware documents a 255-character limit."),
+    description: z
+      .string()
+      .optional()
+      .describe(
+        "Position description. Lexware documents a 2000-character limit and supports simple " +
+          "formatting here: **bold**, __italic__, and `- ` bullet lines. Line breaks are \\n.",
+      ),
     quantity: z.number().optional(),
     unitName: z.string().optional().describe('e.g. "piece", "hour".'),
     unitPrice: moneySchema.optional(),
@@ -192,9 +198,52 @@ const baseDocumentShape = {
       "Payment terms (paymentTermLabel + paymentTermDuration in days). Set this at creation — the Lexware " +
         "API has no update endpoint for invoices/quotations/etc., so a draft cannot be patched afterwards.",
     ),
-  title: z.string().optional(),
-  introduction: z.string().optional(),
-  remark: z.string().optional(),
+  title: z
+    .string()
+    .optional()
+    .describe(
+      'Document heading, e.g. "Rechnung". Lexware documents a 25-character limit on this one, ' +
+        "which is much shorter than the other text fields.",
+    ),
+  introduction: z
+    .string()
+    .optional()
+    .describe(
+      "Text above the line items. Lexware documents a 2000-character limit and supports simple " +
+        "formatting: **bold**, __italic__, and `- ` bullet lines. Line breaks are \\n.",
+    ),
+  remark: z
+    .string()
+    .optional()
+    .describe(
+      "Closing text below the line items. Same 2000-character limit and formatting support as " +
+        "introduction.",
+    ),
+  // Both live on the shared base shape, so both appear on every document create tool.
+  // That is right for `printLayoutId`, which Lexware documents for sales voucher
+  // endpoints generally. For `language` it is broader than the documentation: only
+  // invoices, credit notes and order confirmations are named. It stays here rather than
+  // being gated per type, because unlike an XML download on a quotation — impossible,
+  // and gated for that reason — an unlisted `language` is merely undocumented: it may
+  // well work, and removing the option would be the more confident error of the two.
+  // The description says exactly how far the documentation goes.
+  language: z
+    .string()
+    .optional()
+    .describe(
+      'Document language, e.g. "de" or "en" — this is how an English invoice is produced. ' +
+        "Lexware documents it for invoices, credit notes and order confirmations; on quotations, " +
+        "delivery notes and dunnings it is undocumented and may be ignored. Needs an Invoicing Pro " +
+        "plan (check businessFeatures via get-profile). Omit to use the organization default.",
+    ),
+  printLayoutId: z
+    .string()
+    .optional()
+    .describe(
+      "Print layout to render with. Ids come from get-print-layouts; documented for sales voucher " +
+        "endpoints generally, and needs an Invoicing Pro plan. Omit to use the organization's " +
+        "default layout.",
+    ),
 } as const;
 
 /** Invoice (draft or finalized): base fields + required shippingConditions. */
@@ -226,7 +275,13 @@ export const articleInputShape = {
   unitName: z.string().describe('e.g. "piece", "hour".'),
   articleNumber: z.string().optional(),
   gtin: z.string().optional(),
-  description: z.string().optional(),
+  description: z
+    .string()
+    .optional()
+    .describe(
+      "Article description. Lexware supports simple formatting here: **bold**, __italic__, and " +
+        "`- ` bullet lines. Note this applies to the description only, NOT to the title.",
+    ),
   price: jsonObj(
     z
       .object({
@@ -251,7 +306,13 @@ export const articleUpdateShape = {
   unitName: z.string().optional().describe('e.g. "piece", "hour".'),
   articleNumber: z.string().optional(),
   gtin: z.string().optional(),
-  description: z.string().optional(),
+  description: z
+    .string()
+    .optional()
+    .describe(
+      "Article description. Lexware supports simple formatting here: **bold**, __italic__, and " +
+        "`- ` bullet lines. Note this applies to the description only, NOT to the title.",
+    ),
   price: jsonObj(
     z
       .object({
