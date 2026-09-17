@@ -140,9 +140,17 @@ export const addressSchema = z
 
 export const taxConditionsSchema = z
   .object({
+    // Left as a free string (this module is deliberately lenient about enums Lexware
+    // extends over time), but the description has to list the real values: the previous
+    // one offered "thirdPartyCountry", which the API does not accept — it has separate
+    // …Service and …Delivery variants — so the model was being steered into a 406.
     taxType: z
       .string()
-      .describe('e.g. "net", "gross", "vatfree", "intraCommunitySupply", "thirdPartyCountry".'),
+      .describe(
+        'One of "net", "gross", "vatfree", "intraCommunitySupply", "constructionService13b", ' +
+          '"externalService13b", "thirdPartyCountryService", "thirdPartyCountryDelivery", ' +
+          '"photovoltaicEquipment". An XRechnung requires "net".',
+      ),
   })
   .passthrough();
 

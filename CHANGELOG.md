@@ -7,6 +7,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **The voucherlist no longer advertises three filter values the API rejects, and can now reach the
+  receipt inbox.** Probed every value individually against the live API: `voucherType` `dunning` and
+  `recurringtemplate` and `voucherStatus` `paymentordered` all come back
+  `400 Invalid value '…' received for request parameter '…'`, so the model was being offered choices
+  that could only fail. They are gone. Conversely `unchecked` (the uncategorized Belege-Eingang) and
+  `blank` (OCR still running on a fresh upload) are accepted but were missing, which meant the only
+  way to find an uncategorized receipt was to page the whole voucherlist under `any` and filter
+  client-side. Dunnings and recurring templates are unaffected — they were never voucherlist rows and
+  are still reached via `get-dunning` / `get-document` and `list-recurring-templates`.
+- **`taxConditions.taxType` no longer suggests a value the API rejects.** The description offered
+  `thirdPartyCountry`, which does not exist; the real values are the separate
+  `thirdPartyCountryService` and `thirdPartyCountryDelivery`. It now lists all nine accepted values
+  (the four that were missing: `constructionService13b`, `externalService13b`,
+  `thirdPartyCountryDelivery`, `photovoltaicEquipment`) and notes that an XRechnung requires `net`.
+  The field stays a free string, since Lexware extends this set over time.
 - **A trailing root-label dot on an allow-list ENTRY no longer silently blocks everything.**
   `isAllowedHost` normalized the incoming hostname (trim, case-fold, strip the trailing dot) but
   only trimmed and case-folded the configured entries, so
