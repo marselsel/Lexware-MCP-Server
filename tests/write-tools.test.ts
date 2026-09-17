@@ -462,14 +462,16 @@ describe("render-*-pdf and get-document-file download /file", () => {
     const client = mkClient();
     const handlers = handlersFor((s, c) => registerDocumentReadTools(s, c, "https://app.test"), client);
     await handlers["render-invoice-pdf"]({ id: "i9" });
-    expect(client.getBinary).toHaveBeenCalledWith("/v1/invoices/i9/file");
+    // The accept type is now passed explicitly rather than left to getBinary's default;
+    // the header on the wire is the same.
+    expect(client.getBinary).toHaveBeenCalledWith("/v1/invoices/i9/file", "application/pdf");
   });
 
   it("get-document-file hits /v1/{resourceType}/{id}/file", async () => {
     const client = mkClient();
     const handlers = handlersFor((s, c) => registerDocumentReadTools(s, c, "https://app.test"), client);
     await handlers["get-document-file"]({ resourceType: "credit-notes", id: "c3" });
-    expect(client.getBinary).toHaveBeenCalledWith("/v1/credit-notes/c3/file");
+    expect(client.getBinary).toHaveBeenCalledWith("/v1/credit-notes/c3/file", "application/pdf");
   });
 });
 
