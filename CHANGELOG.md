@@ -61,9 +61,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   way to find an uncategorized receipt was to page the whole voucherlist under `any` and filter
   client-side. Dunnings and recurring templates are unaffected — they were never voucherlist rows and
   are still reached via `get-dunning` / `get-document` and `list-recurring-templates`.
-- **The voucherlist date filters are documented as `yyyy-MM-dd`, which is all they accept.** The
+- **The voucherlist date filters are enforced as `yyyy-MM-dd`, which is all they accept.** The
   descriptions said "ISO date"; passing the full ISO datetime that the create tools use for
-  `voucherDate` gets a 400, so the wording was inviting the error.
+  `voucherDate` gets a 400, so the wording was inviting the error. All six bounds now reject the
+  wrong shape locally instead of spending a request on it. Probed on all three families —
+  `voucherDateFrom`, `createdDateFrom` and `updatedDateFrom` each answer 200 for `2025-01-01` and
+  400 for `2025-01-01T00:00:00.000+01:00`.
+- **`get-voucher-file` asks for `*/*` instead of `application/pdf`.** A voucher attachment is
+  whatever the user filed, and the same endpoint already served `download-file` with `*/*`; the
+  narrower header could only ever turn a non-PDF receipt into a 406. Not a reproduced failure —
+  every attachment in the test account is a PDF — but the restriction had no upside, and the new
+  voucherlist filters are precisely what opens up the receipt inbox. When a response carries no
+  content-type at all, the fallback is now `application/octet-stream` rather than the `*/*` pattern,
+  which is not a media type a client can render.
 - **`taxConditions.taxType` no longer suggests a value the API rejects.** The description offered
   `thirdPartyCountry`, which does not exist; the real values are the separate
   `thirdPartyCountryService` and `thirdPartyCountryDelivery`. It now lists all nine accepted values

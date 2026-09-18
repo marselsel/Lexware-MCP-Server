@@ -209,6 +209,26 @@ describe("LexwareClient", () => {
     expect(contentType).toBe("application/pdf");
   });
 
+  it("getBinary falls back to octet-stream, not to a wildcard Accept", async () => {
+    // The voucher and file downloads send `Accept: */*` because an attachment is whatever
+    // the user filed. If the response carries no content-type, echoing that back would put
+    // a match pattern where a media type belongs: it reaches the caller as the embedded
+    // resource's `mimeType`, and `*/*` is not a media type a strict client can render.
+    // Built without the `binary` helper on purpose: it defaults the header to
+    // application/pdf, and the whole point here is a response that carries none.
+    const noContentType = () => new Response(new Uint8Array([1]), { status: 200 });
+    const client = makeClient(vi.fn(noContentType) as unknown as typeof fetch);
+    const { contentType } = await client.getBinary("/v1/files/abc", "*/*");
+    expect(contentType).toBe("application/octet-stream");
+  });
+
+  it("getBinary still falls back to a concrete Accept when the response omits one", async () => {
+    const noContentType = () => new Response(new Uint8Array([1]), { status: 200 });
+    const client = makeClient(vi.fn(noContentType) as unknown as typeof fetch);
+    const { contentType } = await client.getBinary("/v1/invoices/x/file", "application/xml");
+    expect(contentType).toBe("application/xml");
+  });
+
   it("getBinary retries an idempotent GET on 5xx, then succeeds", async () => {
     let n = 0;
     const fetchFn = vi.fn(async () => {

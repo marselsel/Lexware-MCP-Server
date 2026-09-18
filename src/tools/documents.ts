@@ -176,9 +176,9 @@ async function fetchDocumentFile(
       // electronicDocumentProfile.
       //
       // Rethrown as a LexwareApiError, not a bare Error: only the WORDING is being
-      // improved, so the 404 must survive it. Downgrading to Error would strip `status`
-      // and `kind`, and every caller that classifies — isNotFound(), the status branches
-      // in uploads/routes.ts — would stop recognising a not-found as one.
+      // improved, so the 404 must survive it. Downgrading to Error would strip `status`,
+      // `kind` and the Lexware body, leaving an error that no longer says what it is —
+      // the message would read better while the error got harder to handle.
       throw new LexwareApiError(
         err.status,
         `No XML returned for ${resource}/${id}. Either that document is not an XRechnung — a ZUGFeRD ` +
@@ -285,19 +285,7 @@ function voucherFilterValue(value: string | string[] | undefined, field: string)
   return parts.join(",");
 }
 
-/**
- * Date-range filters `GET /v1/voucherlist` accepts.
- *
- * All six take `yyyy-MM-dd` ONLY. A full ISO datetime — the format the create tools
- * use for `voucherDate`, so an easy mistake to carry over — is rejected with a 400.
- * Both bounds are inclusive full days (Lexware made the `…To` bounds inclusive in
- * August 2026).
- *
- * `voucherDate*` filters on the document's own date, which the user sets and often
- * backdates. `createdDate*` and `updatedDate*` filter on when Lexware itself saw the
- * row, which is what an incremental sync needs ("what changed since my last run") and
- * what `voucherDate` cannot answer.
- */
+/** The `yyyy-MM-dd` shape every voucherlist date bound is restricted to. */
 const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
@@ -317,6 +305,21 @@ const dateFilterParam = (what: string) =>
     .optional()
     .describe(`${what}, yyyy-MM-dd (inclusive). A full ISO datetime is rejected.`);
 
+/**
+ * Date-range filters `GET /v1/voucherlist` accepts.
+ *
+ * All six take `yyyy-MM-dd` ONLY. A full ISO datetime — the format the create tools
+ * use for `voucherDate`, so an easy mistake to carry over — is rejected with a 400.
+ * Probed on all three families: `voucherDateFrom`, `createdDateFrom` and
+ * `updatedDateFrom` each answer 200 for `2025-01-01` and 400 for
+ * `2025-01-01T00:00:00.000+01:00`. Both bounds are inclusive full days (Lexware made
+ * the `…To` bounds inclusive in August 2026).
+ *
+ * `voucherDate*` filters on the document's own date, which the user sets and often
+ * backdates. `createdDate*` and `updatedDate*` filter on when Lexware itself saw the
+ * row, which is what an incremental sync needs ("what changed since my last run") and
+ * what `voucherDate` cannot answer.
+ */
 const VOUCHERLIST_DATE_FILTERS = {
   voucherDateFrom: dateFilterParam("Document-date lower bound"),
   voucherDateTo: dateFilterParam("Document-date upper bound"),

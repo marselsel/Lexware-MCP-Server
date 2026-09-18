@@ -1,5 +1,6 @@
 import type { McpServer } from "skybridge/server";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { LexwareClient } from "../src/lexware/client.js";
 import { LexwareApiError } from "../src/lexware/errors.js";
 import { registerDocumentReadTools } from "../src/tools/documents.js";
@@ -16,16 +17,28 @@ type Handler = (input: Record<string, unknown>) => Promise<unknown>;
 function register(getBinary: LexwareClient["getBinary"]) {
   const client = { getBinary } as unknown as LexwareClient;
   const handlers: Record<string, Handler> = {};
-  const schemas: Record<string, Record<string, unknown>> = {};
+  const schemas: Record<string, z.ZodRawShape> = {};
   const server = {
-    registerTool(cfg: { name: string; inputSchema?: Record<string, unknown> }, handler: Handler) {
+    registerTool(cfg: { name: string; inputSchema?: z.ZodRawShape }, handler: Handler) {
       handlers[cfg.name] = handler;
       if (cfg.inputSchema) schemas[cfg.name] = cfg.inputSchema;
       return server;
     },
   } as unknown as McpServer;
   registerDocumentReadTools(server, client, "https://app.test");
-  return { handlers, schemas };
+
+  /**
+   * Call a tool the way the SDK does: parse through the PUBLISHED schema first.
+   *
+   * Calling a handler with raw input skips both the SDK's strip-mode object and zod, so
+   * an argument sails through whether or not the tool declares it — which means such a
+   * test stays green even if `format` is removed from the schema entirely and XML becomes
+   * unreachable. Every assertion about `format` therefore goes through here.
+   */
+  const invoke = (name: string, input: Record<string, unknown>) =>
+    handlers[name](z.object(schemas[name]).parse(input) as Record<string, unknown>);
+
+  return { handlers, schemas, invoke };
 }
 
 const setup = (getBinary: LexwareClient["getBinary"]) => register(getBinary).handlers;
@@ -53,20 +66,39 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
 
   it("asks for application/xml when the XML is wanted", async () => {
     // The point of the parameter: Lexware's PDF of an XRechnung is a preview and is
-    // explicitly not a valid e-invoice, so the XML has to be reachable.
+    // explicitly not a valid e-invoice, so the XML has to be reachable. Driven through
+    // the published schema, so narrowing the enum to ["pdf"] fails here rather than
+    // leaving a green suite behind a feature that can no longer be requested.
     const spy = xmlOk();
-    await setup(spy as never)["render-invoice-pdf"]({ id: "inv-1", format: "xml" });
+    await register(spy as never).invoke("render-invoice-pdf", { id: "inv-1", format: "xml" });
     expect(call(spy)).toEqual(["/v1/invoices/inv-1/file", "application/xml"]);
   });
 
   it("threads the format through get-document-file too", async () => {
     const spy = xmlOk();
-    await setup(spy as never)["get-document-file"]({
+    await register(spy as never).invoke("get-document-file", {
       resourceType: "credit-notes",
       id: "cn-1",
       format: "xml",
     });
     expect(call(spy)).toEqual(["/v1/credit-notes/cn-1/file", "application/xml"]);
+  });
+
+  it("publishes format on get-document-file, with xml among its values and pdf as default", () => {
+    // get-document-file picks its resource at call time, so it cannot gate `format` in its
+    // schema the way the render-* tools do — which makes it the one place where the
+    // parameter could silently disappear and only ever be noticed as "XML stopped working".
+    const { schemas } = register(pdfOk() as never);
+    expect(Object.keys(schemas["get-document-file"])).toContain("format");
+
+    const published = z.toJSONSchema(z.object(schemas["get-document-file"]), {
+      target: "draft-7",
+      io: "input",
+    }) as { properties: Record<string, { enum?: unknown[]; default?: unknown }> };
+    expect(published.properties.format.enum).toContain("xml");
+    // The default is the whole reason it is declared: a runtime-only default never
+    // reaches the model, which is the same trap PR #46 fixed for the voucherlist filters.
+    expect(published.properties.format.default).toBe("pdf");
   });
 
   it("percent-encodes the id in both tools", async () => {
@@ -97,12 +129,21 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
   });
 
   it("leaves a 404 on a PDF request alone — there it really does mean not found", async () => {
+    // Assert the MESSAGE, not just the class. Since the translation started rethrowing a
+    // LexwareApiError instead of a bare Error, both branches produce the same class, so
+    // `toThrow(LexwareApiError)` no longer distinguishes translated from passed-through —
+    // dropping `format === "xml"` from the catch condition would leave this green while a
+    // plain typo on a PDF request got answered with the XRechnung explanation.
     const notFound = vi.fn(async () => {
       throw new LexwareApiError(404, "Not Found");
     });
-    await expect(
-      setup(notFound as never)["render-invoice-pdf"]({ id: "nope", format: "pdf" }),
-    ).rejects.toThrow(LexwareApiError);
+    const err = await setup(notFound as never)
+      ["render-invoice-pdf"]({ id: "nope", format: "pdf" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LexwareApiError);
+    expect((err as LexwareApiError).status).toBe(404);
+    expect((err as LexwareApiError).message).not.toMatch(/XRechnung|electronicDocumentProfile/);
   });
 
   it("keeps the schema's e-invoice flag and the handler's refusal in agreement", async () => {
@@ -210,12 +251,30 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
 
   it("leaves other errors alone, including a 409 draft", async () => {
     // A draft has no file at all; Lexware answers 409 on /file. That must surface as
-    // itself, not get rewritten into the XML explanation.
+    // itself, not get rewritten into the XML explanation. Asserting the class alone would
+    // not catch that: the translation rethrows a LexwareApiError too, so dropping the
+    // `status === 404` condition would rewrite this 409 and the test would stay green.
     const conflict = vi.fn(async () => {
       throw new LexwareApiError(409, "Conflict");
     });
-    await expect(
-      setup(conflict as never)["render-invoice-pdf"]({ id: "draft-1", format: "xml" }),
-    ).rejects.toThrow(LexwareApiError);
+    const err = await setup(conflict as never)
+      ["render-invoice-pdf"]({ id: "draft-1", format: "xml" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LexwareApiError);
+    expect((err as LexwareApiError).status).toBe(409);
+    expect((err as LexwareApiError).message).not.toMatch(/XRechnung|electronicDocumentProfile/);
+  });
+
+  it("normalizes structuredContent.format on the render tools when none was given", async () => {
+    // The twin assertion on get-document-file exists because that tool echoed the raw
+    // input. Nothing pinned the render-* side, so the same bug could be reintroduced
+    // there: every render test that reads structuredContent.format passes one explicitly,
+    // where the raw and normalized values agree and the bug is invisible.
+    const result = (await register(pdfOk() as never).invoke("render-invoice-pdf", {
+      id: "inv-1",
+    })) as { structuredContent: Record<string, unknown> };
+    expect(result.structuredContent.format).toBe("pdf");
+    expect(result.structuredContent.mimeType).toBe("application/pdf");
   });
 });

@@ -188,10 +188,14 @@ describe("the voucherlist date bounds are yyyy-MM-dd only", () => {
   ] as const;
 
   it("accepts a calendar day on every bound, on both tools", () => {
+    // Assert the bound is DECLARED before checking what it accepts. Skipping a missing
+    // field would make this whole block vacuous: the SDK strips undeclared arguments, so
+    // a bound dropped from summarize-vouchers' schema becomes silently unreachable while
+    // every assertion here still passes.
     const schemas = schemasOf();
     for (const tool of ["get-voucherlist", "summarize-vouchers"]) {
       for (const field of DATE_FIELDS) {
-        if (!(field in schemas[tool])) continue;
+        expect(schemas[tool], `${tool}.${field}`).toHaveProperty(field);
         expect(() => z.object(schemas[tool]).parse({ [field]: "2026-09-17" })).not.toThrow();
       }
     }
@@ -204,7 +208,7 @@ describe("the voucherlist date bounds are yyyy-MM-dd only", () => {
     const schemas = schemasOf();
     for (const tool of ["get-voucherlist", "summarize-vouchers"]) {
       for (const field of DATE_FIELDS) {
-        if (!(field in schemas[tool])) continue;
+        expect(schemas[tool], `${tool}.${field}`).toHaveProperty(field);
         expect(
           () => z.object(schemas[tool]).parse({ [field]: "2026-09-17T00:00:00.000+02:00" }),
           `${tool}.${field}`,
