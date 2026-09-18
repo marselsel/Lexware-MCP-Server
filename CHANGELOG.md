@@ -6,7 +6,90 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`voucherType` and `voucherStatus` take several values at once.** Lexware accepts a
+  comma-separated list; the tools only ever sent one value, so "open and paid invoices" meant two
+  calls and a client-side merge. Both now accept a single value, an array, or the comma-separated
+  string itself (the API's own wire format). Every element is still validated against the enum rather
+  than passed through as a free string, which is load-bearing: an empty entry (`open,,paid`) makes
+  Lexware answer **HTTP 500**, so it is rejected locally instead. The two combinations Lexware refuses
+  — `any` with anything else, and `overdue`, which it derives from the due date rather than storing —
+  are caught before a request is spent, with an error that says why.
+- **`get-voucherlist` can now answer "what changed since ...?" and "which document is RE0069?".** The
+  endpoint has always accepted `createdDateFrom/To`, `updatedDateFrom/To`, `voucherNumber` and `sort`;
+  the tool exposed none of them. Without the created/updated bounds an incremental sync was
+  impossible, because `voucherDate` is the document's own date, which the user sets and often
+  backdates. Without `voucherNumber` the only way to find a document by its number was to page the
+  whole list. `sortBy` + `sortDirection` compose into Lexware's single `sort` parameter, and a
+  direction without a field is rejected rather than silently dropped (that would hand back the DESC
+  default to a caller who asked for ASC). The direction is always written out, because a bare field
+  sorts the OPPOSITE way from no sort at all — probed: no `sort` returns newest-first, `sort=voucherDate`
+  returns oldest-first. `sortDirection` therefore defaults to `DESC`, so naming a field cannot silently
+  flip the order. `summarize-vouchers` gets the same date bounds.
+- **The e-invoice XML is reachable: `format: "xml"` on `render-*-pdf` and `get-document-file`.** Both
+  tools hardcoded `Accept: application/pdf`, and for an XRechnung that is the wrong artifact — Lexware's
+  own documentation says the PDF of an XRechnung "is not a valid e-invoice and should not be used as
+  one". So the only thing the server could hand back for a public-sector invoice was the preview, with
+  no way to reach the XML that is the actual legal document. `getBinary` already took an accept type;
+  it is now threaded through as a two-value enum rather than a free header string. A 404 on an XML
+  request is translated: it means "this document has no standalone XML" (a ZUGFeRD invoice embeds its
+  XML in the PDF, a plain invoice has none), not "no such document", which is what the raw status
+  reads as. The tool names keep their `-pdf` suffix, since renaming a registered tool breaks every
+  saved prompt that refers to it.
+- **`language` and `printLayoutId` are typed on the document create tools.** Both are long-documented
+  Lexware fields — `language` is how an English invoice is produced, `printLayoutId` picks a layout
+  from the ones `get-print-layouts` already lists. Neither was declared, so the SDK's strip-mode
+  object dropped them and they were reachable only through the `additionalFields` escape hatch, which
+  works but requires knowing the field name. Both need an Invoicing Pro plan, which the descriptions
+  say. Typed fields keep winning over `additionalFields`, now covered by a test for these two.
+- **The document and article text fields document Lexware's limits and formatting support.** `title`
+  has an unusually short 25-character limit, `introduction` and `remark` allow 2000, and a line item's
+  `name` 255 with `description` 2000. Since May 2026 Lexware also renders `**bold**`, `__italic__` and
+  `- ` bullet lines in `introduction`, `remark`, a line item's `description` and an article's
+  `description` (but not an article's `title`) — worth stating, because nobody would guess it. These
+  are descriptions rather than `.max()` constraints on purpose: the numbers are vendor-documented and
+  unverified against a live write, and a wrong number in a description cannot reject a valid document
+  the way a wrong `.max()` would.
+
 ### Fixed
+- **The voucherlist no longer advertises three filter values the API rejects, and can now reach the
+  receipt inbox.** Probed every value individually against the live API: `voucherType` `dunning` and
+  `recurringtemplate` and `voucherStatus` `paymentordered` all come back
+  `400 Invalid value '…' received for request parameter '…'`, so the model was being offered choices
+  that could only fail. They are gone. Conversely `unchecked` (the uncategorized Belege-Eingang) and
+  `blank` (OCR still running on a fresh upload) are accepted but were missing, which meant the only
+  way to find an uncategorized receipt was to page the whole voucherlist under `any` and filter
+  client-side. Dunnings and recurring templates are unaffected — they were never voucherlist rows and
+  are still reached via `get-dunning` / `get-document` and `list-recurring-templates`.
+- **The voucherlist date filters are enforced as `yyyy-MM-dd`, which is all they accept.** The
+  descriptions said "ISO date"; passing the full ISO datetime that the create tools use for
+  `voucherDate` gets a 400, so the wording was inviting the error. All six bounds now reject the
+  wrong shape locally instead of spending a request on it. Probed on all three families —
+  `voucherDateFrom`, `createdDateFrom` and `updatedDateFrom` each answer 200 for `2025-01-01` and
+  400 for `2025-01-01T00:00:00.000+01:00`.
+- **`get-voucher-file` asks for `*/*` instead of `application/pdf`.** A voucher attachment is
+  whatever the user filed, and the same endpoint already served `download-file` with `*/*`; the
+  narrower header could only ever turn a non-PDF receipt into a 406. Not a reproduced failure —
+  every attachment in the test account is a PDF — but the restriction had no upside, and the new
+  voucherlist filters are precisely what opens up the receipt inbox. When a response carries no
+  content-type at all, the fallback is now `application/octet-stream` rather than the `*/*` pattern,
+  which is not a media type a client can render.
+- **`taxConditions.taxType` no longer suggests a value the API rejects.** The description offered
+  `thirdPartyCountry`, which does not exist; the real values are the separate
+  `thirdPartyCountryService` and `thirdPartyCountryDelivery`. It now lists all nine accepted values
+  (the four that were missing: `constructionService13b`, `externalService13b`,
+  `thirdPartyCountryDelivery`, `photovoltaicEquipment`) and notes that an XRechnung requires `net`.
+  The field stays a free string, since Lexware extends this set over time.
+- **A contact whose name contains `&`, `<` or `>` can be found again.** Lexware requires those three
+  characters to be HTML-encoded *on top of* the URL encoding in the contacts search filters, so
+  `name=johnson & partner` has to go out as the value `johnson &amp; partner`. The client only
+  URL-encoded, and Lexware then matched nothing at all. The failure was silent, which is the bad
+  part: an empty result set reads as "no such contact" rather than as an encoding problem, so a
+  perfectly real "Müller & Sohn" looked like it did not exist. Verified end to end against the live
+  API through the client's own URL builder: the encoded form returns the contact, the old form
+  returns zero. Applied only to `name` and `email` — Lexware documents that this encoding breaks
+  other parameters, so ids, numbers, dates, enums and `sort` are deliberately left alone. The two
+  descriptions also now mention the SQL-style `_` and `%` wildcards the filters accept.
 - **A trailing root-label dot on an allow-list ENTRY no longer silently blocks everything.**
   `isAllowedHost` normalized the incoming hostname (trim, case-fold, strip the trailing dot) but
   only trimmed and case-folded the configured entries, so

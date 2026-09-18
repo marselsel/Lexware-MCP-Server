@@ -110,7 +110,12 @@ export class LexwareClient {
     });
     try {
       const data = Buffer.from(await res.arrayBuffer());
-      return { data, contentType: res.headers.get("content-type") ?? accept };
+      // Falling back to `accept` only works while it names ONE concrete type. Since the
+      // voucher/file downloads ask for `*/*`, that fallback would put a match pattern
+      // where a media type belongs — it reaches the caller as the resource's `mimeType`,
+      // and a strict MCP client can refuse to render it. Unknown bytes are octet-stream.
+      const fallback = accept.includes("*") || accept.includes(",") ? "application/octet-stream" : accept;
+      return { data, contentType: res.headers.get("content-type") ?? fallback };
     } catch (err) {
       throw this.bodyReadError("GET", path, err);
     }

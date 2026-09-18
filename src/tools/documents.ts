@@ -2,7 +2,14 @@ import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-com
 import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
-import { type Paged, VOUCHER_STATUSES, VOUCHER_TYPES, type VoucherlistEntry } from "../lexware/types.js";
+import { LexwareApiError } from "../lexware/errors.js";
+import {
+  type Paged,
+  VOUCHER_STATUSES,
+  VOUCHER_TYPES,
+  VOUCHERLIST_SORT_FIELDS,
+  type VoucherlistEntry,
+} from "../lexware/types.js";
 import {
   additionalFieldsParam,
   genericDocumentInputShape,
@@ -29,17 +36,24 @@ interface DocType {
   schema: ZodRawShapeCompat | null;
   /** Whether `?finalize=true` issuing is supported. */
   finalize: boolean;
+  /**
+   * Whether this document can ever be an e-invoice, i.e. whether asking for its file
+   * as XML is a sensible thing to do. Only invoices, credit notes and down payment
+   * invoices can; for every other type `electronicDocumentProfile` is always `NONE`,
+   * so offering the choice could only ever produce a failure.
+   */
+  eInvoice: boolean;
 }
 
 const DOC_TYPES: DocType[] = [
-  { key: "invoice", path: "invoices", label: "invoice", schema: invoiceInputShape, finalize: true },
-  { key: "quotation", path: "quotations", label: "quotation", schema: quotationInputShape, finalize: true },
-  { key: "credit-note", path: "credit-notes", label: "credit note", schema: genericDocumentInputShape, finalize: true },
-  { key: "order-confirmation", path: "order-confirmations", label: "order confirmation", schema: genericDocumentInputShape, finalize: true },
-  { key: "delivery-note", path: "delivery-notes", label: "delivery note", schema: genericDocumentInputShape, finalize: true },
-  { key: "dunning", path: "dunnings", label: "dunning", schema: genericDocumentInputShape, finalize: true },
+  { key: "invoice", path: "invoices", label: "invoice", schema: invoiceInputShape, finalize: true, eInvoice: true },
+  { key: "quotation", path: "quotations", label: "quotation", schema: quotationInputShape, finalize: true, eInvoice: false },
+  { key: "credit-note", path: "credit-notes", label: "credit note", schema: genericDocumentInputShape, finalize: true, eInvoice: true },
+  { key: "order-confirmation", path: "order-confirmations", label: "order confirmation", schema: genericDocumentInputShape, finalize: true, eInvoice: false },
+  { key: "delivery-note", path: "delivery-notes", label: "delivery note", schema: genericDocumentInputShape, finalize: true, eInvoice: false },
+  { key: "dunning", path: "dunnings", label: "dunning", schema: genericDocumentInputShape, finalize: true, eInvoice: false },
   // down-payment-invoices are GET-only (no create/finalize) but still have a finalized PDF via /{id}/file.
-  { key: "down-payment-invoice", path: "down-payment-invoices", label: "down payment invoice", schema: null, finalize: false },
+  { key: "down-payment-invoice", path: "down-payment-invoices", label: "down payment invoice", schema: null, finalize: false, eInvoice: true },
 ];
 
 /** Document resource paths — the `resourceType` enum for get-document-file. */
@@ -84,6 +98,99 @@ const VOUCHERTYPE_TO_PATH: Record<string, string> = {
   recurringtemplate: "recurring-templates",
 };
 
+/**
+ * `format` for the sales-voucher file downloads, mapped to the Accept header Lexware
+ * keys off. Verified against the live API:
+ *
+ *   Accept: application/pdf  -> the PDF, for every document profile
+ *   Accept: application/xml  -> the XML for an XRechnung; 404 for EN16931 (ZUGFeRD,
+ *                               whose XML is embedded in the PDF) and for a plain PDF
+ *   anything else            -> 406
+ *
+ * This is more than a convenience: Lexware's own documentation states that the PDF of
+ * an XRechnung "is not a valid e-invoice and should not be used as one", so a
+ * PDF-only download can hand back nothing but the preview for exactly the profile
+ * where the distinction is legally load-bearing.
+ */
+const DOCUMENT_FILE_ACCEPT = {
+  pdf: "application/pdf",
+  xml: "application/xml",
+} as const;
+
+/**
+ * Resources whose `/file` subresource can serve XML. Everything else always reports
+ * `electronicDocumentProfile: "NONE"`, so XML is not merely absent, it is impossible.
+ *
+ * DERIVED from `DOC_TYPES`, not restated: the render-* tools decide whether to publish
+ * the `format` parameter from the same `eInvoice` flag. Two hand-kept copies of one fact
+ * drift silently, and either direction of drift is invisible — a type added here but not
+ * there advertises a choice that is always refused locally, and the reverse requests XML
+ * for a resource whose own render tool hides the option.
+ */
+const E_INVOICE_RESOURCES = new Set(DOC_TYPES.filter((d) => d.eInvoice).map((d) => d.path));
+
+type DocumentFileFormat = keyof typeof DOCUMENT_FILE_ACCEPT;
+
+const documentFormatParam = z
+  .enum(["pdf", "xml"])
+  .default("pdf")
+  .describe(
+    'File format. "xml" returns the e-invoice XML, which ONLY an XRechnung has: a ZUGFeRD ' +
+      "(EN16931) invoice carries its XML embedded inside the PDF, and a plain invoice has none. " +
+      "Check the document's electronicDocumentProfile before asking for xml.",
+  );
+
+/**
+ * Fetch a document's file in the requested format.
+ *
+ * A 404 on an XML request means "this document has no standalone XML", not "no such
+ * document" — the raw status reads as a missing document and would send the caller
+ * looking for the wrong problem, so it is translated into what actually happened.
+ */
+async function fetchDocumentFile(
+  client: LexwareClient,
+  resource: string,
+  id: string,
+  format: DocumentFileFormat,
+): Promise<{ data: Buffer; contentType: string }> {
+  // Refuse before spending a request when the resource can never have XML at all.
+  // get-document-file picks its resource at call time, so this cannot be expressed in
+  // the schema the way the render-* tools do it.
+  if (format === "xml" && !E_INVOICE_RESOURCES.has(resource)) {
+    throw new Error(
+      `A document in /${resource} never has an e-invoice XML: Lexware serves XML only for invoices, ` +
+        `credit notes and down payment invoices, and only when the document is an XRechnung. ` +
+        `Use format="pdf".`,
+    );
+  }
+  try {
+    return await client.getBinary(
+      `/v1/${resource}/${encodeURIComponent(id)}/file`,
+      DOCUMENT_FILE_ACCEPT[format],
+    );
+  } catch (err) {
+    if (format === "xml" && err instanceof LexwareApiError && err.status === 404) {
+      // Two different causes share this status, and the raw 404 names neither: the
+      // document may exist but have no standalone XML, or the id may simply be wrong.
+      // Naming only the first would send someone with a typo hunting through
+      // electronicDocumentProfile.
+      //
+      // Rethrown as a LexwareApiError, not a bare Error: only the WORDING is being
+      // improved, so the 404 must survive it. Downgrading to Error would strip `status`,
+      // `kind` and the Lexware body, leaving an error that no longer says what it is —
+      // the message would read better while the error got harder to handle.
+      throw new LexwareApiError(
+        err.status,
+        `No XML returned for ${resource}/${id}. Either that document is not an XRechnung — a ZUGFeRD ` +
+          `(EN16931) invoice keeps its XML embedded in the PDF and a plain invoice has none, so check ` +
+          `electronicDocumentProfile and use format="pdf" — or no document exists with that id.`,
+        err.body,
+      );
+    }
+    throw err;
+  }
+}
+
 /** Dimensions `summarize-vouchers` can group totals by. */
 const SUMMARY_GROUP_BY = ["voucherType", "voucherStatus", "month", "contact", "currency", "none"] as const;
 
@@ -105,6 +212,123 @@ function summaryGroupKey(row: VoucherlistEntry, groupBy: (typeof SUMMARY_GROUP_B
   }
 }
 
+/**
+ * A voucherlist `voucherType` / `voucherStatus` filter.
+ *
+ * Lexware accepts one value or a comma-separated list, so this takes either a single
+ * enum value or an array of them. It also tolerates the comma-separated string itself,
+ * because that is the API's own wire format and a plausible thing for a caller to
+ * reach for, and a JSON-encoded array, for clients that serialise array arguments as
+ * strings.
+ *
+ * Deliberately NOT a free string: an empty entry (`open,,paid`) makes Lexware answer
+ * HTTP 500, so every part is validated against the enum before a request is spent on
+ * it. The published JSON Schema is an `anyOf` of the two branches, so the allowed
+ * values stay visible to the model in both.
+ */
+function voucherFilterParam<const T extends readonly [string, ...string[]]>(values: T) {
+  return z.preprocess(
+    (raw) => {
+      if (typeof raw !== "string") return raw;
+      const value = raw.trim();
+      if (value.startsWith("[")) {
+        try {
+          return JSON.parse(value);
+        } catch {
+          return raw; // leave as-is so Zod reports a precise error
+        }
+      }
+      return value.includes(",") ? value.split(",").map((part) => part.trim()) : value;
+    },
+    // `.default` belongs INSIDE the preprocess wrapper. Applied outside it lands on a
+    // ZodPipe, and zod does not carry a pipe's default into the published input JSON
+    // Schema — the runtime default still works, but the model stops being told that
+    // "any" is the default, which is the only reason it is declared. Same convention
+    // as `jsonNum(z.number().int().default(40))` elsewhere in this file.
+    z.union([z.enum(values), z.array(z.enum(values)).min(1)]).default("any" as T[number]),
+  );
+}
+
+/**
+ * Values Lexware refuses to combine with anything else in the same filter: `any`
+ * already means "all", and `overdue` is derived from the due date rather than stored.
+ * Both come back as a 400 naming the value, so they are caught here instead of costing
+ * a request.
+ */
+const UNCOMBINABLE_VOUCHER_FILTER_VALUES = new Set(["any", "overdue"]);
+
+/**
+ * Collapse a type/status filter into the single comma-separated value Lexware takes.
+ *
+ * Total by construction, like the `format` resolution in the file download: an empty
+ * result degrades to `"any"` rather than to the empty string. That matters because
+ * `buildUrl` omits only `undefined`, so `""` would go on the wire as `voucherType=`,
+ * and an empty filter value is exactly what makes Lexware answer HTTP 500 instead of a
+ * 400. The zod layer supplies the default in production, but nothing downstream should
+ * depend on that having happened.
+ */
+function voucherFilterValue(value: string | string[] | undefined, field: string): string {
+  // De-duplicate first, so ["any", "any"] reads as the plain "any" it means rather
+  // than tripping the combination check below.
+  const given = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const parts = [...new Set(given)].filter((part) => part !== "");
+  if (parts.length === 0) return "any";
+  const blocking = parts.find((part) => UNCOMBINABLE_VOUCHER_FILTER_VALUES.has(part));
+  if (parts.length > 1 && blocking !== undefined) {
+    throw new Error(
+      `${field} "${blocking}" cannot be combined with other values — pass it on its own.` +
+        (blocking === "any"
+          ? " 'any' already matches every value."
+          : " Lexware derives 'overdue' from the due date rather than storing it."),
+    );
+  }
+  return parts.join(",");
+}
+
+/** The `yyyy-MM-dd` shape every voucherlist date bound is restricted to. */
+const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A voucherlist date bound. The `yyyy-MM-dd`-only rule is enforced, not just described:
+ * the full ISO datetime is the format the create tools require for `voucherDate`, so
+ * carrying it over here is the natural mistake, and it costs a request to find out. This
+ * is the same argument the type/status filters make by validating against their enum —
+ * a value the API is known to reject should not reach it.
+ *
+ * Only the SHAPE is checked. Whether the date exists (2026-02-30) is left to Lexware;
+ * the point is to catch the wrong format, not to re-implement a calendar.
+ */
+const dateFilterParam = (what: string) =>
+  z
+    .string()
+    .regex(CALENDAR_DAY, "Use yyyy-MM-dd — the voucherlist rejects a full ISO datetime.")
+    .optional()
+    .describe(`${what}, yyyy-MM-dd (inclusive). A full ISO datetime is rejected.`);
+
+/**
+ * Date-range filters `GET /v1/voucherlist` accepts.
+ *
+ * All six take `yyyy-MM-dd` ONLY. A full ISO datetime — the format the create tools
+ * use for `voucherDate`, so an easy mistake to carry over — is rejected with a 400.
+ * Probed on all three families: `voucherDateFrom`, `createdDateFrom` and
+ * `updatedDateFrom` each answer 200 for `2025-01-01` and 400 for
+ * `2025-01-01T00:00:00.000+01:00`. Both bounds are inclusive full days (Lexware made
+ * the `…To` bounds inclusive in August 2026).
+ *
+ * `voucherDate*` filters on the document's own date, which the user sets and often
+ * backdates. `createdDate*` and `updatedDate*` filter on when Lexware itself saw the
+ * row, which is what an incremental sync needs ("what changed since my last run") and
+ * what `voucherDate` cannot answer.
+ */
+const VOUCHERLIST_DATE_FILTERS = {
+  voucherDateFrom: dateFilterParam("Document-date lower bound"),
+  voucherDateTo: dateFilterParam("Document-date upper bound"),
+  createdDateFrom: dateFilterParam("Lower bound on when the row was CREATED in Lexware"),
+  createdDateTo: dateFilterParam("Upper bound on when the row was CREATED in Lexware"),
+  updatedDateFrom: dateFilterParam("Lower bound on when the row was LAST CHANGED"),
+  updatedDateTo: dateFilterParam("Upper bound on when the row was LAST CHANGED"),
+} as const;
+
 /** Read tools for financial documents. Always registered. */
 export function registerDocumentReadTools(
   server: McpServer,
@@ -115,26 +339,81 @@ export function registerDocumentReadTools(
     {
       name: "get-voucherlist",
       description:
-        "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus are required; use 'any' to match all. Results are paged.",
+        "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus both default to 'any', which matches all. Results are paged. Filter by createdDate*/updatedDate* to see only what is new or changed since a given day, and by voucherNumber to look a single document up by its number.",
       inputSchema: {
-        voucherType: z.enum(VOUCHER_TYPES).default("any"),
-        voucherStatus: z.enum(VOUCHER_STATUSES).default("any"),
+        voucherType: voucherFilterParam(VOUCHER_TYPES)
+          .describe("One type, or several as an array/comma-separated list. 'any' must stand alone."),
+        voucherStatus: voucherFilterParam(VOUCHER_STATUSES)
+          .describe(
+            "One status, or several as an array/comma-separated list. 'any' and 'overdue' must each stand alone.",
+          ),
         contactId: z.string().optional(),
-        voucherDateFrom: z.string().optional().describe("ISO date lower bound."),
-        voucherDateTo: z.string().optional().describe("ISO date upper bound."),
+        voucherNumber: z
+          .string()
+          .optional()
+          .describe(
+            'Exact voucher number, e.g. "RE0069". Matches the WHOLE number only — a prefix or ' +
+              "substring returns nothing. This is the only way to find a document by its number; " +
+              "there is no search-by-number endpoint.",
+          ),
+        ...VOUCHERLIST_DATE_FILTERS,
+        sortBy: z
+          .enum(VOUCHERLIST_SORT_FIELDS)
+          .optional()
+          .describe("Field to sort by. Omit for Lexware's default, which is voucherDate newest-first."),
+        sortDirection: z
+          .enum(["ASC", "DESC"])
+          .optional()
+          .describe(
+            "Sort direction, defaulting to DESC. Requires sortBy; on its own it has nothing to sort.",
+          ),
         archived: jsonBool(z.boolean().optional()),
         page: pageParam,
         size: sizeParam,
       },
       annotations: RO,
     },
-    async ({ voucherType, voucherStatus, contactId, voucherDateFrom, voucherDateTo, archived, page, size }) => {
+    async ({
+      voucherType,
+      voucherStatus,
+      contactId,
+      voucherNumber,
+      voucherDateFrom,
+      voucherDateTo,
+      createdDateFrom,
+      createdDateTo,
+      updatedDateFrom,
+      updatedDateTo,
+      sortBy,
+      sortDirection,
+      archived,
+      page,
+      size,
+    }) => {
+      // Fail here rather than silently dropping the direction: a caller who asked for
+      // ASC and got Lexware's DESC default would read the wrong end of the list.
+      if (sortDirection && !sortBy) {
+        throw new Error("sortDirection requires sortBy — name the field to sort on.");
+      }
       const result = await client.get<Paged<VoucherlistEntry>>("/v1/voucherlist", {
-        voucherType,
-        voucherStatus,
+        voucherType: voucherFilterValue(voucherType, "voucherType"),
+        voucherStatus: voucherFilterValue(voucherStatus, "voucherStatus"),
         contactId,
+        voucherNumber,
         voucherDateFrom,
         voucherDateTo,
+        createdDateFrom,
+        createdDateTo,
+        updatedDateFrom,
+        updatedDateTo,
+        // Lexware carries the direction inside `sort` itself, as "field,DIR". The direction
+        // is always written out, because a BARE field sorts the opposite way from no sort at
+        // all — probed: no sort -> 2026-09-17 first, `sort=voucherDate` -> 2025-07-25 first,
+        // `sort=voucherDate,DESC` -> 2026-09-17 first. Spring Data defaults a bare property to
+        // ASC while the voucherlist's own default is newest-first, so naming a field and no
+        // direction would silently hand back the oldest rows to a caller who only wanted to
+        // sort by the field they were already getting.
+        sort: sortBy === undefined ? undefined : `${sortBy},${sortDirection ?? "DESC"}`,
         archived,
         page,
         size,
@@ -154,11 +433,14 @@ export function registerDocumentReadTools(
         "currency — the net/VAT split is not in the voucherlist, so this does not break out USt. " +
         "voucherType/voucherStatus default to 'any'.",
       inputSchema: {
-        voucherType: z.enum(VOUCHER_TYPES).default("any"),
-        voucherStatus: z.enum(VOUCHER_STATUSES).default("any"),
+        voucherType: voucherFilterParam(VOUCHER_TYPES)
+          .describe("One type, or several as an array/comma-separated list. 'any' must stand alone."),
+        voucherStatus: voucherFilterParam(VOUCHER_STATUSES)
+          .describe(
+            "One status, or several as an array/comma-separated list. 'any' and 'overdue' must each stand alone.",
+          ),
         contactId: z.string().optional(),
-        voucherDateFrom: z.string().optional().describe("ISO date lower bound."),
-        voucherDateTo: z.string().optional().describe("ISO date upper bound."),
+        ...VOUCHERLIST_DATE_FILTERS,
         archived: jsonBool(z.boolean().optional()),
         groupBy: z
           .enum(SUMMARY_GROUP_BY)
@@ -176,6 +458,10 @@ export function registerDocumentReadTools(
       contactId,
       voucherDateFrom,
       voucherDateTo,
+      createdDateFrom,
+      createdDateTo,
+      updatedDateFrom,
+      updatedDateTo,
       archived,
       groupBy,
       maxPages,
@@ -190,15 +476,24 @@ export function registerDocumentReadTools(
       let page = 0;
       let pagesScanned = 0;
       let truncated = false;
+      // Resolved once, above the loop: the inputs are loop-invariant, and resolving them
+      // here also means the uncombinable-value error ("any" or "overdue" alongside another
+      // value) is raised as the argument check it is, rather than from inside paging.
+      const voucherTypeParam = voucherFilterValue(voucherType, "voucherType");
+      const voucherStatusParam = voucherFilterValue(voucherStatus, "voucherStatus");
       // Walk every page; we only keep aggregates, so the response size is bounded
       // regardless of how many vouchers match.
       for (;;) {
         const res = await client.get<Paged<VoucherlistEntry>>("/v1/voucherlist", {
-          voucherType,
-          voucherStatus,
+          voucherType: voucherTypeParam,
+          voucherStatus: voucherStatusParam,
           contactId,
           voucherDateFrom,
           voucherDateTo,
+          createdDateFrom,
+          createdDateTo,
+          updatedDateFrom,
+          updatedDateTo,
           archived,
           page,
           size: SIZE,
@@ -247,12 +542,19 @@ export function registerDocumentReadTools(
       const grandOpen = round2(groupList.reduce((s, g) => s + g.sumOpenAmount, 0));
       return {
         structuredContent: {
+          // Every filter that narrowed the scan has to appear here: this block is what
+          // a caller reads back to caption the total, so a bound that is applied but
+          // not echoed turns an honest number into a mislabelled one.
           filters: {
             voucherType,
             voucherStatus,
             contactId,
             voucherDateFrom,
             voucherDateTo,
+            createdDateFrom,
+            createdDateTo,
+            updatedDateFrom,
+            updatedDateTo,
             archived,
             groupBy,
           },
@@ -291,23 +593,42 @@ export function registerDocumentReadTools(
   for (const doc of DOC_TYPES) {
     server.registerTool(
       {
+        // The tool name keeps its `-pdf` suffix even though it can now also return XML:
+        // renaming a registered tool breaks every saved prompt and client config that
+        // refers to it, which is a poor trade for a suffix. The description carries it.
         name: `render-${doc.key}-pdf`,
-        description:
-          `Download the finalized PDF of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it inline. ` +
-          `The document must be FINALIZED — a draft has no file yet. (get-document-file is the generic form.)`,
-        inputSchema: { id: z.string() },
+        description: doc.eInvoice
+          ? `Download the finalized file of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
+            `inline — the PDF by default, or the e-invoice XML with format="xml" (XRechnung only). ` +
+            `The document must be FINALIZED — a draft has no file yet. (get-document-file is the generic form.)`
+          : `Download the finalized PDF of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
+            `inline. The document must be FINALIZED — a draft has no file yet. ` +
+            `(get-document-file is the generic form.)`,
+        // The format choice is offered only where XML is possible. A quotation, order
+        // confirmation, delivery note or dunning always reports
+        // `electronicDocumentProfile: "NONE"`, so advertising format="xml" there would be
+        // offering a choice that can only fail — the pattern #44 exists to remove.
+        inputSchema: doc.eInvoice ? { id: z.string(), format: documentFormatParam } : { id: z.string() },
         annotations: RO,
       },
-      async ({ id }) => {
-        const { data, contentType } = await client.getBinary(
-          `/v1/${doc.path}/${encodeURIComponent(id)}/file`,
-        );
+      async ({ id, format }) => {
+        // Resolved here rather than relying on zod's default having been applied:
+        // anything that is not an explicit "xml" is the PDF, which keeps the handler
+        // total even when it is driven directly.
+        const wanted: DocumentFileFormat = format === "xml" ? "xml" : "pdf";
+        const { data, contentType } = await fetchDocumentFile(client, doc.path, id, wanted);
         return binaryResult({
-          uri: `lexware://${doc.path}/${id}/file`,
+          uri: `lexware://${doc.path}/${id}/file?format=${wanted}`,
           data,
           contentType,
-          structuredContent: { resource: doc.path, id, mimeType: contentType, byteLength: data.length },
-          message: `Downloaded ${doc.label} ${id} PDF (${data.length} bytes).`,
+          structuredContent: {
+            resource: doc.path,
+            id,
+            format: wanted,
+            mimeType: contentType,
+            byteLength: data.length,
+          },
+          message: `Downloaded ${doc.label} ${id} as ${wanted.toUpperCase()} (${data.length} bytes).`,
         });
       },
     );
@@ -393,24 +714,31 @@ export function registerDocumentReadTools(
     {
       name: "get-document-file",
       description:
-        "Download the finalized PDF of a document by resource + id (GET /v1/{resourceType}/{id}/file), returned " +
-        "inline. The document must be FINALIZED. resourceType is the REST path, e.g. 'invoices', 'credit-notes'.",
+        "Download the finalized file of a document by resource + id (GET /v1/{resourceType}/{id}/file), " +
+        "returned inline — the PDF by default, or the e-invoice XML with format=\"xml\" (XRechnung only). " +
+        "The document must be FINALIZED. resourceType is the REST path, e.g. 'invoices', 'credit-notes'.",
       inputSchema: {
         resourceType: z.enum(DOC_FILE_PATHS).describe("Document resource path, e.g. 'invoices', 'credit-notes'."),
         id: z.string(),
+        format: documentFormatParam,
       },
       annotations: RO,
     },
-    async ({ resourceType, id }) => {
-      const { data, contentType } = await client.getBinary(
-        `/v1/${resourceType}/${encodeURIComponent(id)}/file`,
-      );
+    async ({ resourceType, id, format }) => {
+      const wanted: DocumentFileFormat = format === "xml" ? "xml" : "pdf";
+      const { data, contentType } = await fetchDocumentFile(client, resourceType, id, wanted);
       return binaryResult({
-        uri: `lexware://${resourceType}/${id}/file`,
+        uri: `lexware://${resourceType}/${id}/file?format=${wanted}`,
         data,
         contentType,
-        structuredContent: { resource: resourceType, id, mimeType: contentType, byteLength: data.length },
-        message: `Downloaded ${resourceType} ${id} PDF (${data.length} bytes).`,
+        structuredContent: {
+          resource: resourceType,
+          id,
+          format: wanted,
+          mimeType: contentType,
+          byteLength: data.length,
+        },
+        message: `Downloaded ${resourceType} ${id} as ${wanted.toUpperCase()} (${data.length} bytes).`,
       });
     },
   );
@@ -434,7 +762,14 @@ export function registerDocumentReadTools(
       if (!fileId) {
         throw new Error(`Voucher ${id} has no attached file at index ${fileIndex}.`);
       }
-      const { data, contentType } = await client.getBinary(`/v1/files/${encodeURIComponent(fileId)}`);
+      // `*/*`, matching download-file on the very same endpoint. A voucher attachment is
+      // whatever the user filed — Lexware converts uploads to PDF in practice, but relying
+      // on that would make the narrower Accept a silent 406 the day it does not. getBinary
+      // defaults to application/pdf, which is right for a rendered document and wrong here.
+      const { data, contentType } = await client.getBinary(
+        `/v1/files/${encodeURIComponent(fileId)}`,
+        "*/*",
+      );
       return binaryResult({
         uri: `lexware://files/${fileId}`,
         data,

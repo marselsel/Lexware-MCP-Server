@@ -286,7 +286,9 @@ describe("get-document dispatch + get-voucher-file", () => {
     expect(get).toHaveBeenCalledWith("/v1/vouchers/x");
     await handlers["get-document"]({ id: "y", voucherType: "quotation" });
     expect(get).toHaveBeenCalledWith("/v1/quotations/y");
-    // recurringtemplate is a real voucherlist type and must dispatch, not throw.
+    // recurringtemplate is not a valid voucherlist FILTER value (the API 400s on it, see
+    // voucherlist-enums.test.ts), but get-document takes a free string and still has to
+    // dispatch it to the recurring-templates endpoint rather than throw.
     await handlers["get-document"]({ id: "r", voucherType: "recurringtemplate" });
     expect(get).toHaveBeenCalledWith("/v1/recurring-templates/r");
     await expect(handlers["get-document"]({ id: "z", voucherType: "bogus" })).rejects.toThrow(
@@ -311,7 +313,10 @@ describe("get-document dispatch + get-voucher-file", () => {
       structuredContent: { fileId: string };
     };
     expect(get).toHaveBeenCalledWith("/v1/vouchers/v1");
-    expect(getBinary).toHaveBeenCalledWith("/v1/files/file-7");
+    // `*/*`, not getBinary's application/pdf default: a voucher attachment is whatever the
+    // user filed, so narrowing the Accept header here would 406 on a non-PDF receipt. Same
+    // endpoint, same Accept as download-file.
+    expect(getBinary).toHaveBeenCalledWith("/v1/files/file-7", "*/*");
     expect(res.structuredContent.fileId).toBe("file-7");
   });
 });
@@ -460,14 +465,16 @@ describe("render-*-pdf and get-document-file download /file", () => {
     const client = mkClient();
     const handlers = handlersFor((s, c) => registerDocumentReadTools(s, c, "https://app.test"), client);
     await handlers["render-invoice-pdf"]({ id: "i9" });
-    expect(client.getBinary).toHaveBeenCalledWith("/v1/invoices/i9/file");
+    // The accept type is now passed explicitly rather than left to getBinary's default;
+    // the header on the wire is the same.
+    expect(client.getBinary).toHaveBeenCalledWith("/v1/invoices/i9/file", "application/pdf");
   });
 
   it("get-document-file hits /v1/{resourceType}/{id}/file", async () => {
     const client = mkClient();
     const handlers = handlersFor((s, c) => registerDocumentReadTools(s, c, "https://app.test"), client);
     await handlers["get-document-file"]({ resourceType: "credit-notes", id: "c3" });
-    expect(client.getBinary).toHaveBeenCalledWith("/v1/credit-notes/c3/file");
+    expect(client.getBinary).toHaveBeenCalledWith("/v1/credit-notes/c3/file", "application/pdf");
   });
 });
 
