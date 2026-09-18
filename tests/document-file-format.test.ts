@@ -6,11 +6,17 @@ import { registerDocumentReadTools } from "../src/tools/documents.js";
 
 type Handler = (input: Record<string, unknown>) => Promise<unknown>;
 
-const schemas: Record<string, Record<string, unknown>> = {};
-
-function setup(getBinary: LexwareClient["getBinary"]) {
+/**
+ * Register the read tools and return their handlers.
+ *
+ * Both maps are per-call on purpose. A module-level one accumulates across tests, so an
+ * assertion can be satisfied by an entry an earlier test's setup() wrote — the schema
+ * test below would stay green even if the tool stopped being registered at all.
+ */
+function register(getBinary: LexwareClient["getBinary"]) {
   const client = { getBinary } as unknown as LexwareClient;
   const handlers: Record<string, Handler> = {};
+  const schemas: Record<string, Record<string, unknown>> = {};
   const server = {
     registerTool(cfg: { name: string; inputSchema?: Record<string, unknown> }, handler: Handler) {
       handlers[cfg.name] = handler;
@@ -19,8 +25,10 @@ function setup(getBinary: LexwareClient["getBinary"]) {
     },
   } as unknown as McpServer;
   registerDocumentReadTools(server, client, "https://app.test");
-  return handlers;
+  return { handlers, schemas };
 }
+
+const setup = (getBinary: LexwareClient["getBinary"]) => register(getBinary).handlers;
 
 /** Fresh spies per test — a shared mock would carry calls between them. */
 const pdfOk = () =>
@@ -97,12 +105,45 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
     ).rejects.toThrow(LexwareApiError);
   });
 
+  it("keeps the schema's e-invoice flag and the handler's refusal in agreement", async () => {
+    // Two mechanisms encode the same fact: the render-* tools publish `format` from
+    // DOC_TYPES[].eInvoice, and get-document-file refuses xml from E_INVOICE_RESOURCES.
+    // E_INVOICE_RESOURCES is derived from the flag precisely so they cannot disagree —
+    // this asserts the agreement, so the derivation cannot be quietly replaced by a
+    // hand-kept copy that then drifts.
+    const pairs: [resource: string, renderTool: string][] = [
+      ["invoices", "render-invoice-pdf"],
+      ["quotations", "render-quotation-pdf"],
+      ["credit-notes", "render-credit-note-pdf"],
+      ["order-confirmations", "render-order-confirmation-pdf"],
+      ["delivery-notes", "render-delivery-note-pdf"],
+      ["dunnings", "render-dunning-pdf"],
+      ["down-payment-invoices", "render-down-payment-invoice-pdf"],
+    ];
+
+    for (const [resource, renderTool] of pairs) {
+      const { handlers, schemas } = register(xmlOk() as never);
+      const rendererOffersXml = Object.keys(schemas[renderTool] ?? {}).includes("format");
+
+      const outcome = await handlers["get-document-file"]({ resourceType: resource, id: "x", format: "xml" })
+        .then(() => "accepted" as const)
+        .catch((e: Error) => (/never has an e-invoice XML/.test(e.message) ? ("refused" as const) : "accepted"));
+
+      expect(outcome, `${resource}: renderer offers format=${rendererOffersXml}`).toBe(
+        rendererOffersXml ? "accepted" : "refused",
+      );
+    }
+  });
+
   it("offers format only where an e-invoice is possible", () => {
     // A quotation, order confirmation, delivery note or dunning always reports
     // electronicDocumentProfile "NONE", so advertising format="xml" on those tools
     // would offer a choice that can only fail.
-    setup(pdfOk() as never);
+    const { schemas } = register(pdfOk() as never);
     for (const name of ["render-invoice-pdf", "render-credit-note-pdf", "render-down-payment-invoice-pdf"]) {
+      // Assert the tool exists before inspecting it, so a vanished registration fails
+      // here with a readable message instead of Object.keys(undefined) throwing.
+      expect(schemas, name).toHaveProperty(name);
       expect(Object.keys(schemas[name])).toContain("format");
     }
     for (const name of [
@@ -111,6 +152,7 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
       "render-delivery-note-pdf",
       "render-dunning-pdf",
     ]) {
+      expect(schemas, name).toHaveProperty(name);
       expect(Object.keys(schemas[name])).not.toContain("format");
     }
   });
@@ -125,6 +167,24 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
       }),
     ).rejects.toThrow(/never has an e-invoice XML/);
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("keeps the reworded XML 404 classifiable as a 404", async () => {
+    // Only the WORDING is improved. Rethrowing as a bare Error would strip `status` and
+    // `kind`, so isNotFound() and every status branch elsewhere would stop recognising it
+    // — the message would read better while the error got harder to handle.
+    const notFound = vi.fn(async () => {
+      throw new LexwareApiError(404, "Not Found", { IssueList: [{ type: "missing" }] });
+    });
+    const err = await setup(notFound as never)
+      ["render-invoice-pdf"]({ id: "inv-1", format: "xml" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(LexwareApiError);
+    expect((err as LexwareApiError).status).toBe(404);
+    expect((err as LexwareApiError).kind).toBe("not_found");
+    // The original Lexware body survives the rewording, so nothing is lost by it.
+    expect((err as LexwareApiError).body).toEqual({ IssueList: [{ type: "missing" }] });
   });
 
   it("names both causes of the 404, not just the profile one", async () => {

@@ -3,15 +3,21 @@
  *
  * Lexware requires `&`, `<` and `>` to be HTML-encoded *in addition to* the ordinary
  * URL encoding, in the search filters of the contacts, vouchers and voucherlist
- * endpoints. Their documented example: searching for `johnson & partner` must go out as
+ * endpoints. Searching for `johnson & partner` must send the VALUE `johnson &amp; partner`,
+ * not `johnson & partner`, which is what a plain URL encoder produces.
  *
- *     name=johnson%20%26amp%3B%20partner        (i.e. the value "johnson &amp; partner")
+ * This function does the HTML half; the client's `URLSearchParams` does the URL half.
+ * What actually goes on the wire is therefore
  *
- * and NOT as `name=johnson%20%26%20partner`, which is what a plain URL encoder produces.
- * `URLSearchParams` does the URL half; this function does the HTML half, so the two
- * compose into the form above.
+ *     name=johnson+%26amp%3B+partner
  *
- * Verified against the live API with a contact named `ZZZ Encoding Test & Co (...)`:
+ * with `+` for the spaces, because `URLSearchParams` serializes as
+ * application/x-www-form-urlencoded rather than percent-encoding them as `%20`. That is
+ * the form that was verified, so it is the form recorded here — Lexware's own docs write
+ * the example with `%20`, but the two are equivalent to its query decoder.
+ *
+ * Verified against the live API with a contact named `ZZZ Encoding Test & Co (...)`,
+ * driven through the client's own URL builder rather than a hand-typed query string:
  *
  *     control, no special character        -> 1 match
  *     plain `&`   (URL encoding only)      -> 0 matches   <- what we used to send

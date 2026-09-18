@@ -1,5 +1,6 @@
 import type { McpServer } from "skybridge/server";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import type { LexwareClient } from "../src/lexware/client.js";
 import { registerDocumentReadTools } from "../src/tools/documents.js";
 
@@ -141,6 +142,63 @@ describe("summarize-vouchers filters", () => {
     expect(result.structuredContent.filters.updatedDateTo).toBe("2026-09-17");
     for (const key of ["createdDateFrom", "createdDateTo", "updatedDateFrom", "updatedDateTo"]) {
       expect(key in result.structuredContent.filters).toBe(true);
+    }
+  });
+});
+
+/** Register the read tools and keep the published schemas, to test the zod layer itself. */
+function schemasOf(): Record<string, z.ZodRawShape> {
+  const schemas: Record<string, z.ZodRawShape> = {};
+  const server = {
+    registerTool(cfg: { name: string; inputSchema?: z.ZodRawShape }) {
+      if (cfg.inputSchema) schemas[cfg.name] = cfg.inputSchema;
+      return server;
+    },
+  } as unknown as McpServer;
+  registerDocumentReadTools(server, {} as unknown as LexwareClient, "https://app.test");
+  return schemas;
+}
+
+describe("the voucherlist date bounds are yyyy-MM-dd only", () => {
+  const DATE_FIELDS = [
+    "voucherDateFrom",
+    "voucherDateTo",
+    "createdDateFrom",
+    "createdDateTo",
+    "updatedDateFrom",
+    "updatedDateTo",
+  ] as const;
+
+  it("accepts a calendar day on every bound, on both tools", () => {
+    const schemas = schemasOf();
+    for (const tool of ["get-voucherlist", "summarize-vouchers"]) {
+      for (const field of DATE_FIELDS) {
+        if (!(field in schemas[tool])) continue;
+        expect(() => z.object(schemas[tool]).parse({ [field]: "2026-09-17" })).not.toThrow();
+      }
+    }
+  });
+
+  it("rejects the full ISO datetime the create tools require for voucherDate", () => {
+    // Verified live: Lexware answers 400 for this format. It is the natural mistake to
+    // make, because create-draft-invoice REQUIRES exactly this shape for voucherDate, so
+    // catching it locally saves a request that could only fail.
+    const schemas = schemasOf();
+    for (const tool of ["get-voucherlist", "summarize-vouchers"]) {
+      for (const field of DATE_FIELDS) {
+        if (!(field in schemas[tool])) continue;
+        expect(
+          () => z.object(schemas[tool]).parse({ [field]: "2026-09-17T00:00:00.000+02:00" }),
+          `${tool}.${field}`,
+        ).toThrow(/yyyy-MM-dd/);
+      }
+    }
+  });
+
+  it("rejects other near-miss shapes rather than passing them through", () => {
+    const schemas = schemasOf();
+    for (const bad of ["17.09.2026", "2026-9-17", "2026-09-17 00:00", "yesterday", ""]) {
+      expect(() => z.object(schemas["get-voucherlist"]).parse({ createdDateFrom: bad }), bad).toThrow();
     }
   });
 });

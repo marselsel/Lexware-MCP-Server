@@ -112,16 +112,22 @@ const VOUCHERTYPE_TO_PATH: Record<string, string> = {
  * PDF-only download can hand back nothing but the preview for exactly the profile
  * where the distinction is legally load-bearing.
  */
-/**
- * Resources whose `/file` subresource can serve XML. Everything else always reports
- * `electronicDocumentProfile: "NONE"`, so XML is not merely absent, it is impossible.
- */
-const E_INVOICE_RESOURCES = new Set(["invoices", "credit-notes", "down-payment-invoices"]);
-
 const DOCUMENT_FILE_ACCEPT = {
   pdf: "application/pdf",
   xml: "application/xml",
 } as const;
+
+/**
+ * Resources whose `/file` subresource can serve XML. Everything else always reports
+ * `electronicDocumentProfile: "NONE"`, so XML is not merely absent, it is impossible.
+ *
+ * DERIVED from `DOC_TYPES`, not restated: the render-* tools decide whether to publish
+ * the `format` parameter from the same `eInvoice` flag. Two hand-kept copies of one fact
+ * drift silently, and either direction of drift is invisible — a type added here but not
+ * there advertises a choice that is always refused locally, and the reverse requests XML
+ * for a resource whose own render tool hides the option.
+ */
+const E_INVOICE_RESOURCES = new Set(DOC_TYPES.filter((d) => d.eInvoice).map((d) => d.path));
 
 type DocumentFileFormat = keyof typeof DOCUMENT_FILE_ACCEPT;
 
@@ -168,10 +174,17 @@ async function fetchDocumentFile(
       // document may exist but have no standalone XML, or the id may simply be wrong.
       // Naming only the first would send someone with a typo hunting through
       // electronicDocumentProfile.
-      throw new Error(
+      //
+      // Rethrown as a LexwareApiError, not a bare Error: only the WORDING is being
+      // improved, so the 404 must survive it. Downgrading to Error would strip `status`
+      // and `kind`, and every caller that classifies — isNotFound(), the status branches
+      // in uploads/routes.ts — would stop recognising a not-found as one.
+      throw new LexwareApiError(
+        err.status,
         `No XML returned for ${resource}/${id}. Either that document is not an XRechnung — a ZUGFeRD ` +
           `(EN16931) invoice keeps its XML embedded in the PDF and a plain invoice has none, so check ` +
           `electronicDocumentProfile and use format="pdf" — or no document exists with that id.`,
+        err.body,
       );
     }
     throw err;
@@ -285,25 +298,32 @@ function voucherFilterValue(value: string | string[] | undefined, field: string)
  * row, which is what an incremental sync needs ("what changed since my last run") and
  * what `voucherDate` cannot answer.
  */
+const CALENDAR_DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A voucherlist date bound. The `yyyy-MM-dd`-only rule is enforced, not just described:
+ * the full ISO datetime is the format the create tools require for `voucherDate`, so
+ * carrying it over here is the natural mistake, and it costs a request to find out. This
+ * is the same argument the type/status filters make by validating against their enum —
+ * a value the API is known to reject should not reach it.
+ *
+ * Only the SHAPE is checked. Whether the date exists (2026-02-30) is left to Lexware;
+ * the point is to catch the wrong format, not to re-implement a calendar.
+ */
+const dateFilterParam = (what: string) =>
+  z
+    .string()
+    .regex(CALENDAR_DAY, "Use yyyy-MM-dd — the voucherlist rejects a full ISO datetime.")
+    .optional()
+    .describe(`${what}, yyyy-MM-dd (inclusive). A full ISO datetime is rejected.`);
+
 const VOUCHERLIST_DATE_FILTERS = {
-  voucherDateFrom: z.string().optional().describe("Document-date lower bound, yyyy-MM-dd (inclusive)."),
-  voucherDateTo: z.string().optional().describe("Document-date upper bound, yyyy-MM-dd (inclusive)."),
-  createdDateFrom: z
-    .string()
-    .optional()
-    .describe("Lower bound on when the row was CREATED in Lexware, yyyy-MM-dd (inclusive)."),
-  createdDateTo: z
-    .string()
-    .optional()
-    .describe("Upper bound on when the row was CREATED in Lexware, yyyy-MM-dd (inclusive)."),
-  updatedDateFrom: z
-    .string()
-    .optional()
-    .describe("Lower bound on when the row was LAST CHANGED, yyyy-MM-dd (inclusive)."),
-  updatedDateTo: z
-    .string()
-    .optional()
-    .describe("Upper bound on when the row was LAST CHANGED, yyyy-MM-dd (inclusive)."),
+  voucherDateFrom: dateFilterParam("Document-date lower bound"),
+  voucherDateTo: dateFilterParam("Document-date upper bound"),
+  createdDateFrom: dateFilterParam("Lower bound on when the row was CREATED in Lexware"),
+  createdDateTo: dateFilterParam("Upper bound on when the row was CREATED in Lexware"),
+  updatedDateFrom: dateFilterParam("Lower bound on when the row was LAST CHANGED"),
+  updatedDateTo: dateFilterParam("Upper bound on when the row was LAST CHANGED"),
 } as const;
 
 /** Read tools for financial documents. Always registered. */
@@ -316,7 +336,7 @@ export function registerDocumentReadTools(
     {
       name: "get-voucherlist",
       description:
-        "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus are required; use 'any' to match all. Results are paged. Filter by createdDate*/updatedDate* to see only what is new or changed since a given day, and by voucherNumber to look a single document up by its number.",
+        "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus both default to 'any', which matches all. Results are paged. Filter by createdDate*/updatedDate* to see only what is new or changed since a given day, and by voucherNumber to look a single document up by its number.",
       inputSchema: {
         voucherType: voucherFilterParam(VOUCHER_TYPES)
           .describe("One type, or several as an array/comma-separated list. 'any' must stand alone."),
@@ -445,12 +465,17 @@ export function registerDocumentReadTools(
       let page = 0;
       let pagesScanned = 0;
       let truncated = false;
+      // Resolved once, above the loop: the inputs are loop-invariant, and resolving them
+      // here also means the uncombinable-value error ("any" or "overdue" alongside another
+      // value) is raised as the argument check it is, rather than from inside paging.
+      const voucherTypeParam = voucherFilterValue(voucherType, "voucherType");
+      const voucherStatusParam = voucherFilterValue(voucherStatus, "voucherStatus");
       // Walk every page; we only keep aggregates, so the response size is bounded
       // regardless of how many vouchers match.
       for (;;) {
         const res = await client.get<Paged<VoucherlistEntry>>("/v1/voucherlist", {
-          voucherType: voucherFilterValue(voucherType, "voucherType"),
-          voucherStatus: voucherFilterValue(voucherStatus, "voucherStatus"),
+          voucherType: voucherTypeParam,
+          voucherStatus: voucherStatusParam,
           contactId,
           voucherDateFrom,
           voucherDateTo,
@@ -726,7 +751,14 @@ export function registerDocumentReadTools(
       if (!fileId) {
         throw new Error(`Voucher ${id} has no attached file at index ${fileIndex}.`);
       }
-      const { data, contentType } = await client.getBinary(`/v1/files/${encodeURIComponent(fileId)}`);
+      // `*/*`, matching download-file on the very same endpoint. A voucher attachment is
+      // whatever the user filed — Lexware converts uploads to PDF in practice, but relying
+      // on that would make the narrower Accept a silent 406 the day it does not. getBinary
+      // defaults to application/pdf, which is right for a rendered document and wrong here.
+      const { data, contentType } = await client.getBinary(
+        `/v1/files/${encodeURIComponent(fileId)}`,
+        "*/*",
+      );
       return binaryResult({
         uri: `lexware://files/${fileId}`,
         data,

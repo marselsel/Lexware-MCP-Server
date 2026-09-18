@@ -313,7 +313,10 @@ describe("get-document dispatch + get-voucher-file", () => {
       structuredContent: { fileId: string };
     };
     expect(get).toHaveBeenCalledWith("/v1/vouchers/v1");
-    expect(getBinary).toHaveBeenCalledWith("/v1/files/file-7");
+    // `*/*`, not getBinary's application/pdf default: a voucher attachment is whatever the
+    // user filed, so narrowing the Accept header here would 406 on a non-PDF receipt. Same
+    // endpoint, same Accept as download-file.
+    expect(getBinary).toHaveBeenCalledWith("/v1/files/file-7", "*/*");
     expect(res.structuredContent.fileId).toBe("file-7");
   });
 });
