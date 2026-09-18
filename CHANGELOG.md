@@ -22,7 +22,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   backdates. Without `voucherNumber` the only way to find a document by its number was to page the
   whole list. `sortBy` + `sortDirection` compose into Lexware's single `sort` parameter, and a
   direction without a field is rejected rather than silently dropped (that would hand back the DESC
-  default to a caller who asked for ASC). `summarize-vouchers` gets the same date bounds.
+  default to a caller who asked for ASC). The direction is always written out, because a bare field
+  sorts the OPPOSITE way from no sort at all — probed: no `sort` returns newest-first, `sort=voucherDate`
+  returns oldest-first. `sortDirection` therefore defaults to `DESC`, so naming a field cannot silently
+  flip the order. `summarize-vouchers` gets the same date bounds.
 - **The e-invoice XML is reachable: `format: "xml"` on `render-*-pdf` and `get-document-file`.** Both
   tools hardcoded `Accept: application/pdf`, and for an XRechnung that is the wrong artifact — Lexware's
   own documentation says the PDF of an XRechnung "is not a valid e-invoice and should not be used as

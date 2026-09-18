@@ -76,14 +76,32 @@ describe("get-voucherlist filters", () => {
     expect(query(get).sort).toBe("voucherNumber,ASC");
   });
 
-  it("sends the bare field when no direction is given, leaving Lexware's default", async () => {
+  it("writes DESC out when no direction is given, rather than sending a bare field", async () => {
+    // A bare field is NOT "Lexware's default" — it is the opposite of it. Probed live:
+    //   no sort at all      -> 2026-09-17 first (newest)
+    //   sort=voucherDate    -> 2025-07-25 first (OLDEST)
+    //   sort=voucherDate,DESC -> 2026-09-17 first (newest)
+    // Spring Data defaults a bare property to ASC while the voucherlist's own default is
+    // newest-first, so a caller who names the field they are already sorted by and omits
+    // the direction would silently get the far end of the list back.
     const { handlers, get } = setup();
     await handlers["get-voucherlist"]({
       voucherType: "invoice",
       voucherStatus: "any",
       sortBy: "createdDate",
     });
-    expect(query(get).sort).toBe("createdDate");
+    expect(query(get).sort).toBe("createdDate,DESC");
+  });
+
+  it("keeps an explicit ASC, so the default never overrides what was asked for", async () => {
+    const { handlers, get } = setup();
+    await handlers["get-voucherlist"]({
+      voucherType: "invoice",
+      voucherStatus: "any",
+      sortBy: "createdDate",
+      sortDirection: "ASC",
+    });
+    expect(query(get).sort).toBe("createdDate,ASC");
   });
 
   it("omits `sort` entirely when no sortBy is given", async () => {

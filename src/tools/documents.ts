@@ -361,7 +361,9 @@ export function registerDocumentReadTools(
         sortDirection: z
           .enum(["ASC", "DESC"])
           .optional()
-          .describe("Sort direction. Requires sortBy; on its own it has nothing to sort."),
+          .describe(
+            "Sort direction, defaulting to DESC. Requires sortBy; on its own it has nothing to sort.",
+          ),
         archived: jsonBool(z.boolean().optional()),
         page: pageParam,
         size: sizeParam,
@@ -401,8 +403,14 @@ export function registerDocumentReadTools(
         createdDateTo,
         updatedDateFrom,
         updatedDateTo,
-        // Lexware carries the direction inside `sort` itself, as "field" or "field,DIR".
-        sort: sortBy === undefined ? undefined : sortDirection ? `${sortBy},${sortDirection}` : sortBy,
+        // Lexware carries the direction inside `sort` itself, as "field,DIR". The direction
+        // is always written out, because a BARE field sorts the opposite way from no sort at
+        // all — probed: no sort -> 2026-09-17 first, `sort=voucherDate` -> 2025-07-25 first,
+        // `sort=voucherDate,DESC` -> 2026-09-17 first. Spring Data defaults a bare property to
+        // ASC while the voucherlist's own default is newest-first, so naming a field and no
+        // direction would silently hand back the oldest rows to a caller who only wanted to
+        // sort by the field they were already getting.
+        sort: sortBy === undefined ? undefined : `${sortBy},${sortDirection ?? "DESC"}`,
         archived,
         page,
         size,
