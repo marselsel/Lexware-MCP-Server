@@ -1,71 +1,34 @@
-import express from "express";
+import type { JsonOptions } from "skybridge/server";
 
 /**
- * Case-insensitive prefix match on a URL path segment. Express's own routing
- * is case-insensitive by default (`app.set("case sensitive routing", ...)` is
- * off unless explicitly enabled, and this project never enables it) — so
- * `POST /UPLOAD/<ticket>` and `POST /Mcp` really do reach the same handlers as
- * their lowercase spellings. An earlier version of `isMcpPath`/`isUploadPath`
- * compared case-sensitively, which meant an uppercase path was routed to the
- * real handler but NOT recognized by the body-parsing swap below — for
- * `/UPLOAD`, that reopened the gzip-amplification path (Critical 2) up to the
- * ~100 KB global-parser limit, since the pre-check + raw-body defenses in
- * routes.ts never got a chance to run before the global JSON parser did.
- */
-function matchesPathCaseInsensitive(p: string, exact: string, prefix: string): boolean {
-  const lower = p.toLowerCase();
-  return lower === exact || lower.startsWith(prefix);
-}
-
-/** MCP protocol traffic. Bodies are parsed by a raised-limit parser mounted AFTER the auth gate (see server.ts). */
-export const isMcpPath = (p: string): boolean => matchesPathCaseInsensitive(p, "/mcp", "/mcp/");
-
-/**
- * Ticket-gated upload endpoints (`registerUploadRoutes`). These read the request
- * body themselves via `express.raw()` and must never be pre-parsed by the global
- * JSON layer — if that layer ran first, `req.body` would already be a parsed
- * object (not a `Buffer`) for any `Content-Type: application/json` upload, and a
- * naive length guard would treat that as an empty-but-successful upload while
- * still consuming the ticket.
- */
-export const isUploadPath = (p: string): boolean => matchesPathCaseInsensitive(p, "/upload", "/upload/");
-
-/**
- * Reconfigure body parsing so large uploads (and the raw-body ticket routes) work
- * WITHOUT widening the pre-auth attack surface. Skybridge pre-applies a single
- * global `express.json()` (~100 KB default) at router-stack index 0 — before the
- * `/mcp` auth middleware AND before the `/upload` ticket routes' own
- * `express.raw()`. We swap that layer's handler, in place, so it keeps the
- * ~100 KB limit for ordinary routes (e.g. `/status`) but calls `next()`
- * immediately — without touching `req.body` at all — for any path `skipPath`
- * accepts.
+ * Options for Skybridge's built-in, app-level `express.json()` — deliberately inert.
  *
- * In-place handler swap (no stack reordering) so it can't mis-order routes.
- * Guarded: returns `false` if the internal layer can't be located, and the
- * caller must treat that as "the swap did not happen" (server.ts warns loudly;
- * routes.ts's own `Buffer.isBuffer` guard is the defense-in-depth backstop for
- * exactly this case).
+ * Skybridge applies that parser in the `Skybridge` constructor, as router-stack layer 0.
+ * That is ahead of every middleware this project can register, including the auth gate,
+ * and ahead of the upload routes' own `express.raw()`. Both of those orderings matter:
  *
- * Exported (rather than kept private in server.ts) so the upload routes' tests
- * can exercise this exact function against a test app shaped like the real
- * stack, instead of a parallel reimplementation that could silently drift from
- * production — which is precisely how the original `/upload` JSON-body bug
- * stayed invisible: the test app never had a global JSON parser to begin with.
+ * - Raising its `limit` (the documented use of `json`) would buffer and parse a multi-MB
+ *   body for an UNAUTHENTICATED request. `server.ts` mounts the raised-limit parser on
+ *   `/mcp` *after* the auth gate precisely so that cannot happen.
+ * - Leaving it at the ~100 KB default would pre-parse `/upload/:ticket` bodies. For a
+ *   `Content-Type: application/json` upload `req.body` would then be a parsed object
+ *   rather than a `Buffer`, and a naive length guard reads that as an empty-but-successful
+ *   upload while still consuming the ticket.
+ *
+ * `type: () => false` makes body-parser's content-type predicate never match, so it calls
+ * `next()` without reading the stream at all. Nothing is parsed app-wide; `server.ts`
+ * mounts the parsers it wants, where it wants them.
+ *
+ * This is a passthrough to Express's own `OptionsJson`, whose `type` accepts a predicate,
+ * but it is NOT a documented Skybridge idiom — upstream documents `json` only for raising
+ * the limit. `tests/server-body-parsing.test.ts` pins the behaviour, so a future version
+ * that re-enables the parser fails in CI rather than silently in production.
+ *
+ * Replaces the 1.x approach, which located the `jsonParser` layer inside
+ * `app._router.stack` and swapped its handler in place. That worked, but it depended on
+ * an internal shape and on path predicates of our own that had to agree with Express's
+ * routing — a disagreement there had already reopened a gzip-amplification path once,
+ * because Express routes case-insensitively and the predicates did not. With the parser
+ * inert there are no predicates to disagree.
  */
-export function deferBodyParsingFor(app: express.Express, skipPath: (path: string) => boolean): boolean {
-  try {
-    type Layer = { handle?: express.RequestHandler & { name?: string } };
-    const router =
-      (app as unknown as { router?: { stack: Layer[] }; _router?: { stack: Layer[] } }).router ??
-      (app as unknown as { _router?: { stack: Layer[] } })._router;
-    const stack = router?.stack;
-    if (!Array.isArray(stack)) return false;
-    const layer = stack.find((l) => l?.handle?.name === "jsonParser");
-    if (!layer) return false;
-    const smallJson = express.json(); // ~100 KB default — for /status and other ordinary routes
-    layer.handle = (req, res, next) => (skipPath(req.path) ? next() : smallJson(req, res, next));
-    return true;
-  } catch {
-    return false;
-  }
-}
+export const INERT_APP_JSON: JsonOptions = { type: () => false };
