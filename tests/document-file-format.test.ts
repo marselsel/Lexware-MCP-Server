@@ -268,12 +268,16 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
 
   it("normalizes structuredContent.format on the render tools when none was given", async () => {
     // The twin assertion on get-document-file exists because that tool echoed the raw
-    // input. Nothing pinned the render-* side, so the same bug could be reintroduced
-    // there: every render test that reads structuredContent.format passes one explicitly,
-    // where the raw and normalized values agree and the bug is invisible.
-    const result = (await register(pdfOk() as never).invoke("render-invoice-pdf", {
-      id: "inv-1",
-    })) as { structuredContent: Record<string, unknown> };
+    // input. Nothing pinned the render-* side, so the same bug could be reintroduced there.
+    //
+    // Called RAW, deliberately — this is the one assertion in the file that must NOT go
+    // through `invoke()`. Parsing first applies zod's .default("pdf"), so the raw and the
+    // normalized value agree and echoing the raw one looks correct. The defect only shows
+    // when the handler is driven without that default, which is exactly the totality the
+    // handler claims. (Mutation-checked: via invoke() this test does not catch it.)
+    const result = (await setup(pdfOk() as never)["render-invoice-pdf"]({ id: "inv-1" })) as {
+      structuredContent: Record<string, unknown>;
+    };
     expect(result.structuredContent.format).toBe("pdf");
     expect(result.structuredContent.mimeType).toBe("application/pdf");
   });
