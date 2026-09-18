@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **Migrated to skybridge 2.0.** The HTTP surface moved off `McpServer` onto a new `Skybridge` app
+  class, so `server.express` / `server.use` / `server.run` become `app.express` / `app.use` /
+  `app.run`. `McpServer` keeps `registerTool` and is now the per-request registration object the
+  `handler` receives, so none of the tool modules changed. Two consequences worth knowing:
+  - **The body-parsing hack is gone.** Skybridge installs an app-level `express.json()` in its
+    constructor, ahead of anything we can register — including the auth gate. 1.x dealt with that by
+    finding the `jsonParser` layer inside `app._router.stack` and swapping its handler in place. 2.0
+    has a public `json` config field, so that layer is made inert and `server.ts` mounts
+    `express.json({limit:"12mb"})` on `/mcp` itself, *after* the auth gate. That removes the internals
+    dependency and a whole bug class with it: the old approach needed path predicates of our own that
+    had to agree with Express's routing, and a disagreement there had already reopened a
+    gzip-amplification path once.
+  - **A bad token still answers 401, not 500.** `src/oauth.ts` threw the 1.x SDK's
+    `InvalidTokenError` / `InsufficientScopeError`. skybridge 2 classifies auth failures by
+    `instanceof OAuthError`, and neither legacy class is one — so a bad token would have produced a
+    bare 500 with no `WWW-Authenticate` header, leaving clients with no way to know they should
+    re-authenticate, and the deliberate 403 for a disallowed email domain would have become a 500 too.
+    The compiler cannot see this, because skybridge 2 still depends on the 1.x SDK and the imports
+    still resolve. Now throws `OAuthError`, and a test asserts the error *code* rather than the
+    message.
+
+  The four security-relevant orderings in `server.ts` are asserted against a running container rather
+  than read off the source: an oversized unauthenticated `POST /mcp` is rejected on the header (401,
+  not 413), a JSON-content-typed upload still reaches `express.raw()` as a `Buffer`, `/upload` is not
+  mounted at all under `LEXWARE_READ_ONLY`, and `/status` needs no credentials. A ticket issued
+  through an MCP tool is redeemed on a separate HTTP request, which is what proves the shared
+  `TicketStore` and the rate-limited `LexwareClient` survive the new per-request handler.
+
+  Also: `skybridge/vite` no longer exists in 2.0. This server registers no views, so the plugin was
+  inert here and `vite.config.ts` simply drops it; the dead `build:views` script goes with it.
+
 ### Added
 - **`voucherType` and `voucherStatus` take several values at once.** Lexware accepts a
   comma-separated list; the tools only ever sent one value, so "open and paid invoices" meant two
