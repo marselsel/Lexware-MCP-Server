@@ -17,18 +17,18 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "jose": "^6.2.8",
+    "jose": "^6.2.12",
     "skybridge": "^1.4.1",
-    "vite": "^8.2.0",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@skybridge/devtools": "^1.4.1",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.1.2",
-    "tsx": "^4.23.5",
+    "@types/node": "^26.6.1",
+    "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.10"
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
   },
   "engines": {
     "node": ">=24.14.1"
