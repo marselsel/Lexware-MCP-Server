@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0]
+
+Opens up the voucherlist — multi-value filters, created/updated date bounds, number lookup and
+sorting — makes the e-invoice XML reachable rather than only its PDF preview, and fixes a contacts
+search that silently matched nothing for any name containing `&`, `<` or `>`. Under that, the server
+moves to skybridge 2.0.
+
+Two of these are corrections to things the server previously advertised and should not have.
+`get-voucherlist` offered three `voucherType`/`voucherStatus` values the API rejects outright, so a
+model could only ever spend a request to get a 400; those are gone, and the two accepted values that
+were missing (`unchecked`, `blank`) are in. And naming a `sortBy` without a direction returned the
+*oldest* rows while the parameter's own description promised newest-first — a wrong answer that looks
+entirely plausible. If you pass either of the removed filter values, or rely on the old bare-`sort`
+behaviour, this release changes what you get back.
+
 ### Changed
 - **Migrated to skybridge 2.0.** The HTTP surface moved off `McpServer` onto a new `Skybridge` app
   class, so `server.express` / `server.use` / `server.run` become `app.express` / `app.use` /

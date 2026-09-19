@@ -52,7 +52,7 @@ export const uploadTickets = new TicketStore();
 
 const app = new Skybridge({
   name: "lexware-office",
-  version: "0.1.13",
+  version: "0.2.0",
   capabilities: {},
   // Skybridge's own app-level express.json() runs ahead of everything below, including
   // the auth gate. Kept inert; this file mounts what it needs, where it needs it.
