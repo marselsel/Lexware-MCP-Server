@@ -3,6 +3,7 @@ import express from "express";
 import * as jose from "jose";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { OAuthError, OAuthErrorCode } from "skybridge/server";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   advertisedScopes,
@@ -78,6 +79,37 @@ describe("isEmailVerified", () => {
     expect(isEmailVerified("false")).toBe(false);
     expect(isEmailVerified(undefined)).toBe(false);
     expect(isEmailVerified(1)).toBe(false);
+  });
+});
+
+describe("the rejection is an OAuthError, which is what decides the HTTP status", () => {
+  // Every other rejection test here asserts only the MESSAGE, and the message is the one
+  // thing that does NOT matter to the wire. skybridge 2's requireBearerAuth (from
+  // @modelcontextprotocol/express v2) classifies by `instanceof OAuthError`:
+  //
+  //   const body = error instanceof OAuthError ? error : new OAuthError(ServerError, ...)
+  //
+  // Anything else becomes a bare 500 with NO WWW-Authenticate header, so the client is
+  // never told to re-authenticate. This file previously threw InvalidTokenError /
+  // InsufficientScopeError from the legacy 1.x SDK, which are NOT instances of it —
+  // verified: `new InvalidTokenError("x") instanceof OAuthError === false`. tsc cannot
+  // catch that, because skybridge 2 still depends on the 1.x SDK so the import resolves.
+  it("throws invalid_token for a bad token, so the client gets a 401 + challenge", async () => {
+    const verify = createAccessTokenVerifier(settings(), { jwks });
+    const token = await sign({ sub: "u" }, { iss: "https://evil.example.com" });
+    const err = await verify(token).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OAuthError);
+    expect((err as OAuthError).code).toBe(OAuthErrorCode.InvalidToken);
+  });
+
+  it("throws insufficient_scope for a disallowed domain, so it is a 403 and not a 401 loop", async () => {
+    // Deliberately 403: the token is valid, the user is simply not authorized. A 401
+    // would make clients discard a good token and re-authenticate in a loop.
+    const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["allowed.example"] }), { jwks });
+    const token = await sign({ sub: "u", email: "someone@nope.example", email_verified: true });
+    const err = await verify(token).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OAuthError);
+    expect((err as OAuthError).code).toBe(OAuthErrorCode.InsufficientScope);
   });
 });
 

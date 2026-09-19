@@ -8,27 +8,30 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { LexwareApiError } from "../src/lexware/errors.js";
 import { buildTicketResponse } from "../src/tools/uploads.js";
-import { deferBodyParsingFor, isUploadPath } from "../src/server-body-parsing.js";
+import { INERT_APP_JSON } from "../src/server-body-parsing.js";
 import { TicketStore } from "../src/uploads/tickets.js";
 import { FILENAME_B64_SOURCE, uploadPageHtml } from "../src/uploads/page.js";
 import { decodeFilenameB64, headerString, registerUploadRoutes } from "../src/uploads/routes.js";
 
 /**
  * Builds an app shaped like the real production stack: a global `express.json()`
- * pre-applied at router-stack index 0 (mirroring skybridge's own setup), then the
- * SAME `deferBodyParsingFor` swap `server.ts` uses to keep it off `/upload`. A
- * naked `express()` — what this file used before — cannot reproduce Critical-1
- * (a JSON-content-typed upload silently becoming an empty file): with no global
- * JSON parser in the stack to begin with, `express.raw()` always saw the real
- * bytes, so the bug was invisible here even though it fired in production.
+ * pre-applied at router-stack index 0 (mirroring Skybridge's own constructor), carrying
+ * the SAME `INERT_APP_JSON` options `server.ts` passes it. A naked `express()` — what
+ * this file used before — cannot reproduce Critical-1 (a JSON-content-typed upload
+ * silently becoming an empty file): with no global JSON parser in the stack to begin
+ * with, `express.raw()` always saw the real bytes, so the bug was invisible here even
+ * though it fired in production.
+ *
+ * The coupling is the point, and it survived the skybridge 2.0 migration by changing
+ * shape: production used to neutralize that layer by swapping its handler in place, and
+ * now neutralizes it through Skybridge's `json` config field. Either way this app is
+ * built from the same value production uses, so the two cannot drift. If a future
+ * skybridge re-enables the parser despite those options, `makeApp` starts parsing here
+ * too and these tests fail — which is exactly what should happen.
  */
 function makeApp(store: TicketStore, uploaded: unknown[] = [], maxBytes?: number) {
   const app = express();
-  app.use(express.json());
-  const configured = deferBodyParsingFor(app, isUploadPath);
-  if (!configured) {
-    throw new Error("deferBodyParsingFor could not locate the json layer — test setup no longer matches production");
-  }
+  app.use(express.json(INERT_APP_JSON));
   registerUploadRoutes(
     app,
     store,
@@ -149,8 +152,7 @@ describe("upload routes", () => {
     // makeApp's own upload fn always succeeds, so this needs its own app wired to a
     // failing-then-succeeding upload fn.
     const app = express();
-    app.use(express.json());
-    if (!deferBodyParsingFor(app, isUploadPath)) throw new Error("setup drifted");
+    app.use(express.json(INERT_APP_JSON)); // same options production passes Skybridge
     registerUploadRoutes(app, store, async () => {
       attempt += 1;
       if (attempt === 1) throw new Error("lexware exploded");
@@ -395,8 +397,7 @@ describe("upload routes", () => {
       resolveUpload = resolve;
     });
     const app = express();
-    app.use(express.json());
-    if (!deferBodyParsingFor(app, isUploadPath)) throw new Error("setup drifted");
+    app.use(express.json(INERT_APP_JSON)); // same options production passes Skybridge
     registerUploadRoutes(app, store, async () => uploadPromise);
     const s = await listen(app);
 
@@ -544,8 +545,7 @@ describe("upload routes", () => {
     const store = new TicketStore();
     const t = store.create({ type: "voucher" });
     const app = express();
-    app.use(express.json());
-    if (!deferBodyParsingFor(app, isUploadPath)) throw new Error("setup drifted");
+    app.use(express.json(INERT_APP_JSON)); // same options production passes Skybridge
     registerUploadRoutes(app, store, async () => ({ id: "x" })); // no maxBytes -> default applies
     const s = await listen(app);
     const res = await fetch(`${s.url}/upload/${t.ticket}`, {
@@ -738,8 +738,7 @@ describe("upload routes", () => {
  */
 function makeFailingApp(store: TicketStore, err: unknown) {
   const app = express();
-  app.use(express.json());
-  if (!deferBodyParsingFor(app, isUploadPath)) throw new Error("setup drifted");
+  app.use(express.json(INERT_APP_JSON)); // same options production passes Skybridge
   registerUploadRoutes(app, store, async () => {
     throw err;
   });

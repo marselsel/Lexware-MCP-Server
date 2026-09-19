@@ -1,11 +1,11 @@
 import express, { type Request, type Response } from "express";
-import { mcpAuthMetadataRouter, McpServer, requireBearerAuth } from "skybridge/server";
+import { mcpAuthMetadataRouter, requireBearerAuth, Skybridge } from "skybridge/server";
 import { bearerAuthMiddleware } from "./auth.js";
 import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { LexwareClient } from "./lexware/client.js";
 import { advertisedScopes, buildOAuthMetadata, createAccessTokenVerifier } from "./oauth.js";
 import { registerTools } from "./tools/index.js";
-import { deferBodyParsingFor, isMcpPath, isUploadPath } from "./server-body-parsing.js";
+import { INERT_APP_JSON } from "./server-body-parsing.js";
 import { registerUploadRoutes } from "./uploads/routes.js";
 import { TicketStore } from "./uploads/tickets.js";
 
@@ -39,25 +39,39 @@ const client = new LexwareClient({
   debug: config.debugLogging,
 });
 
-const server = new McpServer(
-  {
-    name: "lexware-office",
-    version: "0.1.13",
-  },
-  { capabilities: {} },
-);
+// Ticket-gated upload path: bytes go browser/curl -> server -> Lexware, never through
+// the model context. Shared store so the MCP tools can issue and read tickets that the
+// upload routes consume.
+//
+// Module scope, NOT inside the handler: Skybridge runs `handler` on EVERY request. A
+// per-request store would mean a ticket issued by one request is unknown to the request
+// that redeems it, so every upload would fail. The same goes for `client` above — it
+// holds the token-bucket rate limiter, and one bucket per request is no limiter at all
+// (which is also why the deployment runs --max-instances=1).
+export const uploadTickets = new TicketStore();
 
-// Defer /mcp bodies from the pre-applied ~100 KB global parser (they get the raised
-// limit post-auth, below). Also defer /upload bodies — those are read raw by
-// registerUploadRoutes' own express.raw(); letting the global JSON parser touch them
-// first silently turned a JSON-content-typed upload into an empty file (see
-// server-body-parsing.ts and routes.ts for the full story). Other routes keep the
-// small limit.
-const bodyParsingConfigured = deferBodyParsingFor(server.express, (p) => isMcpPath(p) || isUploadPath(p));
+const app = new Skybridge({
+  name: "lexware-office",
+  version: "0.1.13",
+  capabilities: {},
+  // Skybridge's own app-level express.json() runs ahead of everything below, including
+  // the auth gate. Kept inert; this file mounts what it needs, where it needs it.
+  // See server-body-parsing.ts for why that ordering is load-bearing.
+  json: INERT_APP_JSON,
+  // Per request, and must be synchronous — so it does registration and nothing else.
+  handler: (server) => {
+    registerTools(server, client, config, uploadTickets);
+    return server;
+  },
+});
+
+// Everything below is registered BEFORE app.run(). Skybridge appends its own /assets,
+// /mcp and error middleware inside run(), so anything added afterwards would land behind
+// the default error handler.
 
 // Unauthenticated health check. Use `/status`, not `/healthz`: Google Front End
 // intercepts `/healthz` on Cloud Run (it never reaches the container).
-server.express.get("/status", (_req: Request, res: Response) => {
+app.express.get("/status", (_req: Request, res: Response) => {
   res.json({ status: "ok" });
 });
 
@@ -65,7 +79,7 @@ server.express.get("/status", (_req: Request, res: Response) => {
 if (config.auth.mode === "oauth") {
   const oauth = config.auth;
   // Advertise the authorization server so MCP clients can discover and sign in.
-  server.use(
+  app.use(
     mcpAuthMetadataRouter({
       oauthMetadata: buildOAuthMetadata(oauth),
       resourceServerUrl: new URL(oauth.resource),
@@ -78,7 +92,7 @@ if (config.auth.mode === "oauth") {
   // followed by the resource's path (so a path-bearing resource resolves correctly).
   const resUrl = new URL(oauth.resource);
   const resPath = resUrl.pathname === "/" ? "" : resUrl.pathname.replace(/\/$/, "");
-  server.use(
+  app.use(
     "/mcp",
     requireBearerAuth({
       verifier: { verifyAccessToken: createAccessTokenVerifier(oauth) },
@@ -86,58 +100,36 @@ if (config.auth.mode === "oauth") {
     }),
   );
 } else if (config.auth.mode === "static") {
-  server.use("/mcp", bearerAuthMiddleware(config.auth.token));
+  app.use("/mcp", bearerAuthMiddleware(config.auth.token));
 }
 // mode "none": no gate (operator explicitly opted into unauthenticated).
 
 // Parse /mcp bodies at the raised limit — mounted AFTER the auth gate above, so an
-// unauthenticated request is rejected before any multi-MB body is buffered/parsed.
-// (Only effective when the global parser was successfully told to defer /mcp.)
-if (bodyParsingConfigured) {
-  server.use("/mcp", express.json({ limit: JSON_BODY_LIMIT }));
-}
+// unauthenticated request is rejected before any multi-MB body is buffered or parsed.
+// Not optional: Skybridge's /mcp handler is called with `req.body`, so with the app-level
+// parser inert this mount is what produces it.
+app.use("/mcp", express.json({ limit: JSON_BODY_LIMIT }));
 
-// Ticket-gated upload path: bytes go browser/curl -> server -> Lexware, never
-// through the model context. Shared store so the MCP tools can issue and read
-// tickets that these routes consume.
-//
-// NOTE: `server` (McpServer) has no get/post/use-as-router surface of its own —
-// only a `use()` for middleware. The real Express app lives at `server.express`
-// (see node_modules/skybridge/dist/server/server.d.ts: "readonly express: Express"
-// with the doc example `server.express.get(...)`), which is also what's already
-// used above for /status. A cast of `server` itself to `express.Express` would
-// type-check (via `as unknown as`) but fail at runtime — McpServer has no `get`/
-// `post` methods to call.
-export const uploadTickets = new TicketStore();
 // The ticket-gated upload routes are a drafts-tier WRITE path (they push a file into the
 // Lexware file store), so mount them only when the drafts capability is enabled. Without
 // this, a read-only deployment (LEXWARE_READ_ONLY, or drafts explicitly off) would still
 // expose the unauthenticated POST /upload/:ticket route wired to Lexware's write API —
 // unreachable, since no ticket can be issued without the drafts-only create-upload-ticket
 // tool, but a write route has no business existing on a server configured not to write.
+//
+// They read the body themselves with express.raw(); with the app-level parser inert,
+// that raw parser is the first thing to touch an upload body.
 if (config.capabilities.drafts) {
-  registerUploadRoutes(server.express, uploadTickets, async ({ bytes, filename, contentType, type }) =>
+  registerUploadRoutes(app.express, uploadTickets, async ({ bytes, filename, contentType, type }) =>
     client.postMultipart<{ id: string }>("/v1/files", { bytes, filename, contentType }, { type }),
   );
 }
 
-registerTools(server, client, config, uploadTickets);
-
 console.error(
-  `[lexware-mcp] starting — ${describeCapabilities(config)} bodyLimit=${bodyParsingConfigured ? `${JSON_BODY_LIMIT} (/mcp, post-auth)` : "default(~100kb)"}`,
+  `[lexware-mcp] starting — ${describeCapabilities(config)} bodyLimit=${JSON_BODY_LIMIT} (/mcp, post-auth)`,
 );
 for (const warning of config.warnings) {
   console.error(`[lexware-mcp] WARNING: ${warning}`);
-}
-if (!bodyParsingConfigured) {
-  console.error(
-    "[lexware-mcp] WARNING: could not raise the JSON body limit (Skybridge/Express internals changed) — " +
-      "uploads over ~100 KB will be rejected. upload-file/upload-voucher-file may fail until this is fixed. " +
-      "The /upload/:ticket endpoints are partially affected too: the global ~100 KB JSON parser stays in " +
-      "front of them instead of being skipped, so a JSON-content-typed ticket upload over ~100 KB fails " +
-      "there as well — other content types (PDFs, images) pass that parser untouched and still work up to " +
-      "the full limit (routes.ts's Buffer.isBuffer guard prevents a silent empty upload for the JSON case).",
-  );
 }
 if (config.auth.mode === "oauth" && config.auth.allowedEmailDomains.length === 0) {
   console.error(
@@ -153,6 +145,6 @@ if (config.auth.mode === "none") {
   );
 }
 
-export default await server.run();
+export default await app.run();
 
-export type AppType = typeof server;
+export type AppType = typeof app;

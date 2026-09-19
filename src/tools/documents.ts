@@ -608,7 +608,13 @@ export function registerDocumentReadTools(
         // confirmation, delivery note or dunning always reports
         // `electronicDocumentProfile: "NONE"`, so advertising format="xml" there would be
         // offering a choice that can only fail — the pattern #44 exists to remove.
-        inputSchema: doc.eInvoice ? { id: z.string(), format: documentFormatParam } : { id: z.string() },
+        // Spread rather than a ternary between two object literals. TypeScript normalizes
+        // such a ternary by giving the shorter branch an implicit `format?: undefined`,
+        // and `undefined` does not satisfy skybridge 2's `Record<string,
+        // StandardSchemaWithJSON>` constraint — so inference silently falls back and
+        // EVERY key, `id` included, is typed `unknown` in the handler. Same runtime object
+        // and same published JSON Schema; only the inference differs.
+        inputSchema: { id: z.string(), ...(doc.eInvoice ? { format: documentFormatParam } : {}) },
         annotations: RO,
       },
       async ({ id, format }) => {

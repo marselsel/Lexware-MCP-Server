@@ -1,4 +1,4 @@
-import { InsufficientScopeError, InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { OAuthError, OAuthErrorCode } from "skybridge/server";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { createHash } from "node:crypto";
@@ -170,11 +170,11 @@ export function createAccessTokenVerifier(oauth: OAuthSettings, deps: VerifierDe
         ...(oauth.verifyAudience ? { audience: audiences } : {}),
       }));
     } catch {
-      throw new InvalidTokenError("Invalid or expired access token");
+      throw new OAuthError(OAuthErrorCode.InvalidToken, "Invalid or expired access token");
     }
 
     const sub = typeof payload.sub === "string" ? payload.sub : "";
-    if (!sub) throw new InvalidTokenError("Token is missing the sub claim");
+    if (!sub) throw new OAuthError(OAuthErrorCode.InvalidToken, "Token is missing the sub claim");
 
     // Trust the email for authorization only when the IdP marked it verified; an
     // unverified token email falls through to the (also verification-checked) userinfo lookup.
@@ -208,9 +208,12 @@ export function createAccessTokenVerifier(oauth: OAuthSettings, deps: VerifierDe
       }
       if (!isEmailDomainAllowed(email, oauth.allowedEmailDomains)) {
         // 403, not 401: the token is valid, the user is simply not authorized. A 401
-        // (InvalidTokenError) would make clients discard the token and re-authenticate
-        // in a loop; InsufficientScopeError maps to 403 and terminates cleanly.
-        throw new InsufficientScopeError("Your email domain is not permitted to use this server");
+        // (invalid_token) would make clients discard the token and re-authenticate in a
+        // loop; insufficient_scope maps to 403 and terminates cleanly.
+        throw new OAuthError(
+          OAuthErrorCode.InsufficientScope,
+          "Your email domain is not permitted to use this server",
+        );
       }
     }
 

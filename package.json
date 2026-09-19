@@ -9,7 +9,6 @@
     "dev": "skybridge dev",
     "dev:tunnel": "skybridge dev --tunnel",
     "build": "tsc -b --force",
-    "build:views": "skybridge build",
     "start": "node dist/server.js",
     "typecheck": "tsc -b --force",
     "test": "vitest run",
@@ -18,11 +17,11 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "jose": "^6.2.12",
-    "skybridge": "^1.4.1",
+    "skybridge": "^2.0.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@skybridge/devtools": "^1.4.1",
+    "@skybridge/devtools": "^2.0.0",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.1",
     "tsx": "^4.23.13",
