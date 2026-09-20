@@ -61,20 +61,38 @@ const app = new Skybridge({
   // Per request, and must be synchronous — so it does registration and nothing else.
   //
   // It costs ~23ms of blocking CPU per request (53 tools at the read+drafts tier), which
-  // is most of the server's own time: locally, `initialize` answers in 33ms and
-  // `tools/list` in 44ms, against 1.8ms for /status. Measured, before reaching for it:
+  // is most of the server's own time. Measured over HTTP against the built image:
+  //
+  //   /status        2.1ms      <- no registration
+  //   initialize    29.5ms      <- pays for all 53 tool schemas and uses none of them
+  //   tools/list    41.3ms
+  //
+  // Do NOT take Skybridge's own boot warning ("The Skybridge handler took 68ms — it runs
+  // on every request") as the recurring figure. It prints once, from the cold first build
+  // during `ready()`, so it carries the JIT warm-up: steady state is ~2.5x cheaper than
+  // that line suggests. Cheaper, and still the dominant cost of a request.
+  //
+  // Where it goes, measured by running the real registerTools twice against a server whose
+  // registerTool drops `inputSchema` in one pass and keeps it in the other:
   //
   //   registration, as it runs today            22.9ms
   //   the same, minus the SDK's zod -> JSON     4.7ms   <- all the rest is ours
   //   Schema conversion
   //
   // So ~79% is `_createRegisteredTool` calling `standardSchemaToJsonSchema` on every
-  // registration, and that part cannot be hoisted away from here: zod does NOT memoize
-  // `~standard.jsonSchema.input()` (a second call on the SAME instance costs the same),
-  // skybridge's `registerTool` only accepts a raw field shape — never a pre-built schema
-  // whose conversion we could cache — and the server genuinely has to be per-request, so
-  // `setup` cannot hold a warmed-up one (sharing an instance would pin every caller to
-  // one negotiated protocol version).
+  // registration, and that part cannot be hoisted away from here:
+  //
+  //   - zod does NOT memoize `~standard.jsonSchema.input()`. Converting ONE hoisted
+  //     instance 300 times costs a median 0.84ms every time and returns a fresh object on
+  //     each call; a per-registration `z.object(shape)` costs 1.03ms. Hoisting buys 18%,
+  //     not the ~100% a memo would.
+  //   - skybridge's `registerTool` constrains its input to `Record<string,
+  //     StandardSchemaWithJSON>` — a raw field shape. A pre-built schema carrying a cached
+  //     JSON Schema is a compile error ("Index signature for type 'string' is missing"),
+  //     and forcing it through types every handler argument `unknown`.
+  //   - the server genuinely has to be per-request, so `setup` cannot hold a warmed-up
+  //     one: skybridge builds a fresh instance deliberately, because sharing one would
+  //     pin concurrent callers to a single negotiated protocol version.
   //
   // The remaining 4.7ms is ours and is hoistable, at the price of lifting every
   // `inputSchema` literal in src/tools/ to module scope. Not taken: a fifth of a cost

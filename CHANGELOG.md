@@ -19,10 +19,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checks, so it silently described an empty tool surface. Nothing consumed it.
 
 ### Documented
-- What the per-request tool registration costs, measured: ~23ms of blocking CPU for the 53 tools at
-  the read+drafts tier, of which ~79% is the SDK converting zod to JSON Schema on every registration
-  — unreachable from here, since zod does not memoize the conversion and `registerTool` only takes a
-  raw field shape. Left as is, with the numbers next to the handler.
+- What the per-request tool registration costs, measured over HTTP against the built image: `/status`
+  2.1ms, `initialize` 29.5ms, `tools/list` 41.3ms. ~79% of it is the SDK converting zod to JSON
+  Schema on every registration — unreachable from here, since zod does not memoize the conversion
+  (one hoisted instance converted 300 times costs the same every time) and `registerTool` only takes
+  a raw field shape. Left as is, with the numbers next to the handler. Note that Skybridge's own
+  "handler took 68ms" boot warning is the cold first build, not the recurring cost.
 - That the inert app-level JSON parser also disarms the devtools "Deploy" button under
   `skybridge dev`. Dev-only, and that button targets a platform this server does not deploy to.
 
