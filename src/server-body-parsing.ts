@@ -24,6 +24,15 @@ import type { JsonOptions } from "skybridge/server";
  * the limit. `tests/server-body-parsing.test.ts` pins the behaviour, so a future version
  * that re-enables the parser fails in CI rather than silently in production.
  *
+ * Known, accepted consequence: this is app-wide, so Skybridge's own dev routes lose the
+ * parser too. Exactly one of them reads a body — `POST /__skybridge/deploy/project` in
+ * `@skybridge/devtools`, which mounts no parser of its own, so under `skybridge dev` the
+ * devtools "Deploy" button answers 400 "name and teamId are required." That button
+ * deploys to Alpic Cloud; this server deploys to Cloud Run, and `NODE_ENV=production` in
+ * the Dockerfile means devtools is never mounted there at all. Scoping the inertness with
+ * a path predicate would buy back a button we do not use, at the cost of reintroducing
+ * the exact predicate-vs-routing mismatch described below.
+ *
  * Replaces the 1.x approach, which located the `jsonParser` layer inside
  * `app._router.stack` and swapped its handler in place. That worked, but it depended on
  * an internal shape and on path predicates of our own that had to agree with Express's

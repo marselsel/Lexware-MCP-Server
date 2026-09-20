@@ -1,9 +1,8 @@
-import { mcpAuthMetadataRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import express from "express";
 import * as jose from "jose";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { OAuthError, OAuthErrorCode } from "skybridge/server";
+import { mcpAuthMetadataRouter, OAuthError, OAuthErrorCode } from "skybridge/server";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   advertisedScopes,
@@ -260,7 +259,14 @@ describe("advertisedScopes", () => {
   });
 });
 
-/** Serve the protected-resource metadata the way server.ts mounts it, and read it back. */
+/**
+ * Serve the protected-resource metadata the way server.ts mounts it, and read it back.
+ *
+ * The router comes from `skybridge/server` for the same reason the OAuth error class does:
+ * skybridge 2 still depends on the 1.x SDK, so importing `mcpAuthMetadataRouter` from
+ * `@modelcontextprotocol/sdk` resolves and typechecks — and pins these RFC 9728 assertions
+ * against an implementation the server does not run.
+ */
 async function protectedResourceDoc(oauth: OAuthSettings): Promise<Record<string, unknown>> {
   const app = express();
   app.use(

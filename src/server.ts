@@ -59,6 +59,34 @@ const app = new Skybridge({
   // See server-body-parsing.ts for why that ordering is load-bearing.
   json: INERT_APP_JSON,
   // Per request, and must be synchronous — so it does registration and nothing else.
+  //
+  // It costs ~23ms of blocking CPU per request (53 tools at the read+drafts tier), which
+  // is most of the server's own time: locally, `initialize` answers in 33ms and
+  // `tools/list` in 44ms, against 1.8ms for /status. Measured, before reaching for it:
+  //
+  //   registration, as it runs today            22.9ms
+  //   the same, minus the SDK's zod -> JSON     4.7ms   <- all the rest is ours
+  //   Schema conversion
+  //
+  // So ~79% is `_createRegisteredTool` calling `standardSchemaToJsonSchema` on every
+  // registration, and that part cannot be hoisted away from here: zod does NOT memoize
+  // `~standard.jsonSchema.input()` (a second call on the SAME instance costs the same),
+  // skybridge's `registerTool` only accepts a raw field shape — never a pre-built schema
+  // whose conversion we could cache — and the server genuinely has to be per-request, so
+  // `setup` cannot hold a warmed-up one (sharing an instance would pin every caller to
+  // one negotiated protocol version).
+  //
+  // The remaining 4.7ms is ours and is hoistable, at the price of lifting every
+  // `inputSchema` literal in src/tools/ to module scope. Not taken: a fifth of a cost
+  // whose other four fifths are upstream.
+  //
+  // Registration still fails at BOOT, not per request, even though it lives here now:
+  // `run()` awaits `ready()`, which builds one sample server (it needs the per-tool
+  // security schemes to wire OAuth) before the port is bound. So a duplicate tool name or
+  // a schema the SDK refuses to convert aborts module evaluation exactly as it did when
+  // this ran at module scope, instead of leaving a revision that answers /status with 200
+  // and every /mcp call with a 500. That ordering is undocumented, so a test pins it:
+  // tests/server-boot-registration.test.ts.
   handler: (server) => {
     registerTools(server, client, config, uploadTickets);
     return server;
@@ -147,4 +175,11 @@ if (config.auth.mode === "none") {
 
 export default await app.run();
 
-export type AppType = typeof app;
+// No `AppType` export. Skybridge's contract is that the handler returns the CHAINED
+// server, so `typeof app` carries the registered tool types for `createClient<AppType>()`
+// and for views. This server cannot honour it: `registerTools` returns void, and even
+// threading the chain through would not help, because the tools are registered in loops
+// over runtime arrays behind capability-tier `if`s — the set is not statically known, by
+// design. So `typeof app` would infer `Record<never, ToolDef>` and quietly hand any
+// future consumer an empty tool surface. Better to have no type than a type that lies;
+// there are no views and no generated client here to want one.
