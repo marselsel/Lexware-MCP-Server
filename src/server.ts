@@ -59,6 +59,14 @@ const app = new Skybridge({
   // See server-body-parsing.ts for why that ordering is load-bearing.
   json: INERT_APP_JSON,
   // Per request, and must be synchronous — so it does registration and nothing else.
+  //
+  // Registration still fails at BOOT, not per request, even though it lives here now:
+  // `run()` awaits `ready()`, which builds one sample server (it needs the per-tool
+  // security schemes to wire OAuth) before the port is bound. So a duplicate tool name or
+  // a schema the SDK refuses to convert aborts module evaluation exactly as it did when
+  // this ran at module scope, instead of leaving a revision that answers /status with 200
+  // and every /mcp call with a 500. That ordering is undocumented, so a test pins it:
+  // tests/server-boot-registration.test.ts.
   handler: (server) => {
     registerTools(server, client, config, uploadTickets);
     return server;
