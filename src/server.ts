@@ -175,4 +175,11 @@ if (config.auth.mode === "none") {
 
 export default await app.run();
 
-export type AppType = typeof app;
+// No `AppType` export. Skybridge's contract is that the handler returns the CHAINED
+// server, so `typeof app` carries the registered tool types for `createClient<AppType>()`
+// and for views. This server cannot honour it: `registerTools` returns void, and even
+// threading the chain through would not help, because the tools are registered in loops
+// over runtime arrays behind capability-tier `if`s — the set is not statically known, by
+// design. So `typeof app` would infer `Record<never, ToolDef>` and quietly hand any
+// future consumer an empty tool surface. Better to have no type than a type that lies;
+// there are no views and no generated client here to want one.
