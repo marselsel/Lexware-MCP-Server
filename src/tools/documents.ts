@@ -1,5 +1,4 @@
-import type { ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
-import type { McpServer } from "skybridge/server";
+import type { McpServer, StandardSchemaWithJSON } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
 import { LexwareApiError } from "../lexware/errors.js";
@@ -24,6 +23,15 @@ import {
 } from "./schemas.js";
 import { LOCAL_RO, RO, WRITE, binaryResult, pagedResult, text } from "./shared.js";
 
+/**
+ * A tool's `inputSchema`: the raw field shape skybridge's `registerTool` takes.
+ *
+ * Named locally rather than imported from the 1.x SDK's `ZodRawShapeCompat`. skybridge 2
+ * still depends on that SDK, so the import resolves and tsc stays quiet while the running
+ * code is the v2 surface — see the same trap in oauth.ts.
+ */
+type ToolInputShape = Record<string, StandardSchemaWithJSON>;
+
 /** A Lexware voucher-document type and how to create it. */
 interface DocType {
   /** Tool-name suffix, e.g. "credit-note". */
@@ -33,7 +41,7 @@ interface DocType {
   /** Human label, e.g. "credit note". */
   label: string;
   /** Create-body schema; null means read-only (no create tools). */
-  schema: ZodRawShapeCompat | null;
+  schema: ToolInputShape | null;
   /** Whether `?finalize=true` issuing is supported. */
   finalize: boolean;
   /**
@@ -811,12 +819,12 @@ export function registerDocumentReadTools(
  * tools. The raw-shape values are real zod schemas at runtime, so `.optional()`
  * works; the cast bridges the SDK's compat type.
  */
-function optionalShape(shape: ZodRawShapeCompat): ZodRawShapeCompat {
+function optionalShape(shape: ToolInputShape): ToolInputShape {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(shape)) {
     out[key] = (value as z.ZodTypeAny).optional();
   }
-  return out as ZodRawShapeCompat;
+  return out as ToolInputShape;
 }
 
 /** Draft-creation tools for every writable document type. Registered with the drafts tier. */

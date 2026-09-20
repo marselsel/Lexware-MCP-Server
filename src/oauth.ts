@@ -1,8 +1,22 @@
-import { OAuthError, OAuthErrorCode } from "skybridge/server";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
+import {
+  type AuthInfo,
+  type AuthMetadataOptions,
+  OAuthError,
+  OAuthErrorCode,
+} from "skybridge/server";
 import { createHash } from "node:crypto";
 import * as jose from "jose";
+
+/**
+ * Authorization-server metadata, taken from the router that serves it rather than imported
+ * on its own — skybridge re-exports the option bag but not this type.
+ *
+ * Deliberately NOT `@modelcontextprotocol/sdk`'s copy of it. skybridge 2 still depends on
+ * the 1.x SDK, so that import resolves and typechecks while `server.ts` mounts the v2
+ * router from `@modelcontextprotocol/express`. Two structurally similar types from two
+ * implementations, only one of which ships. Deriving from the option bag can't drift.
+ */
+type OAuthMetadata = AuthMetadataOptions["oauthMetadata"];
 
 /** Upper bound on the userinfo email cache to prevent unbounded growth. */
 const MAX_EMAIL_CACHE_ENTRIES = 5000;
