@@ -60,6 +60,26 @@ const app = new Skybridge({
   json: INERT_APP_JSON,
   // Per request, and must be synchronous — so it does registration and nothing else.
   //
+  // It costs ~23ms of blocking CPU per request (53 tools at the read+drafts tier), which
+  // is most of the server's own time: locally, `initialize` answers in 33ms and
+  // `tools/list` in 44ms, against 1.8ms for /status. Measured, before reaching for it:
+  //
+  //   registration, as it runs today            22.9ms
+  //   the same, minus the SDK's zod -> JSON     4.7ms   <- all the rest is ours
+  //   Schema conversion
+  //
+  // So ~79% is `_createRegisteredTool` calling `standardSchemaToJsonSchema` on every
+  // registration, and that part cannot be hoisted away from here: zod does NOT memoize
+  // `~standard.jsonSchema.input()` (a second call on the SAME instance costs the same),
+  // skybridge's `registerTool` only accepts a raw field shape — never a pre-built schema
+  // whose conversion we could cache — and the server genuinely has to be per-request, so
+  // `setup` cannot hold a warmed-up one (sharing an instance would pin every caller to
+  // one negotiated protocol version).
+  //
+  // The remaining 4.7ms is ours and is hoistable, at the price of lifting every
+  // `inputSchema` literal in src/tools/ to module scope. Not taken: a fifth of a cost
+  // whose other four fifths are upstream.
+  //
   // Registration still fails at BOOT, not per request, even though it lives here now:
   // `run()` awaits `ready()`, which builds one sample server (it needs the per-tool
   // security schemes to wire OAuth) before the port is bound. So a duplicate tool name or
