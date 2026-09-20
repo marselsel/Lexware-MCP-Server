@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.
+  skybridge 2 runs on the v2 packages but still *depends* on 1.x, so 1.x stays hoisted in
+  `node_modules` and importing it resolves and typechecks while the running code is the v2 surface.
+  That trap already cost one bug during the 2.0 migration — the 1.x `InvalidTokenError` is not an
+  `instanceof` the v2 `OAuthError`, so a bad token would have answered 500 instead of 401. Four
+  imports were left behind; the one that mattered pinned the RFC 9728 metadata tests against a
+  router the server does not run. No behaviour change: the two implementations agree today.
+- Removed the `AppType` export. It could never carry the tool types Skybridge's typed-client contract
+  expects, because the tools are registered in loops over runtime arrays behind capability-tier
+  checks, so it silently described an empty tool surface. Nothing consumed it.
+
+### Documented
+- What the per-request tool registration costs, measured: ~23ms of blocking CPU for the 53 tools at
+  the read+drafts tier, of which ~79% is the SDK converting zod to JSON Schema on every registration
+  — unreachable from here, since zod does not memoize the conversion and `registerTool` only takes a
+  raw field shape. Left as is, with the numbers next to the handler.
+- That the inert app-level JSON parser also disarms the devtools "Deploy" button under
+  `skybridge dev`. Dev-only, and that button targets a platform this server does not deploy to.
+
 ## [0.2.0]
 
 Opens up the voucherlist — multi-value filters, created/updated date bounds, number lookup and
