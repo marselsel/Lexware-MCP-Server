@@ -2,6 +2,7 @@ import express, { type Request, type Response } from "express";
 import { mcpAuthMetadataRouter, requireBearerAuth, Skybridge } from "skybridge/server";
 import { bearerAuthMiddleware } from "./auth.js";
 import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
+import { buildServerInstructions } from "./instructions.js";
 import { LexwareClient } from "./lexware/client.js";
 import { advertisedScopes, buildOAuthMetadata, createAccessTokenVerifier } from "./oauth.js";
 import { registerTools } from "./tools/index.js";
@@ -52,8 +53,13 @@ export const uploadTickets = new TicketStore();
 
 const app = new Skybridge({
   name: "lexware-office",
+  title: "Lexware Office",
+  description: "Contacts, sales documents, vouchers and files in Lexware Office.",
+  websiteUrl: "https://github.com/marselsel/Lexware-MCP-Server",
   version: "0.2.0",
   capabilities: {},
+  // Sent when a client connects: how the tools fit together, scoped to the enabled tiers.
+  instructions: buildServerInstructions(config.capabilities),
   // Skybridge's own app-level express.json() runs ahead of everything below, including
   // the auth gate. Kept inert; this file mounts what it needs, where it needs it.
   // See server-body-parsing.ts for why that ordering is load-bearing.
