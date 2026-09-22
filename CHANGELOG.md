@@ -6,6 +6,21 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- `npm start` now sets `NODE_ENV=production`. Without it Skybridge also mounted its devtools and a
+  Vite dev server — unauthenticated, CORS-open, on every interface — so the README's "Without
+  Docker" path ran a dev server in production. `/mcp` stayed gated; the Docker image was never
+  affected (it sets `NODE_ENV` itself). `npm start` is now POSIX-shell only, like the README.
+- The Lexware client refuses a `.`/`..` path segment (and its `%2e` spellings). `encodeURIComponent`
+  leaves those intact and `new URL` resolves them, so an id of `..` retargeted a call one level up
+  (`upload-voucher-file` with `id: ".."` posted to `/v1/files`). Nothing reachable that way crossed
+  a capability tier, but the path is no longer the caller's to choose.
+- The URL-upload SSRF blocklist also covers IPv6 multicast (`ff00::/8`), local-use NAT64
+  (`64:ff9b:1::/48`), Teredo (`2001::/32`) and discard-only (`100::/64`). Defense in depth: hosts
+  must already be on the allowlist.
+- CI runs with a read-only `GITHUB_TOKEN` and pins actions to commit SHAs (Dependabot keeps them
+  current). `.npmrc` is gitignored so an npm auth token can't be committed.
+
 ### Changed
 - Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.
   skybridge 2 runs on the v2 packages but still *depends* on 1.x, so 1.x stays hoisted in

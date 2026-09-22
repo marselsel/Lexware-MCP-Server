@@ -151,7 +151,22 @@ function isBlockedIPv6Bytes(bytes: number[]): boolean {
   ) {
     return true;
   }
+  // 64:ff9b:1::/48 — local-use NAT64 prefix (RFC 8215), blocked for the same reason.
+  if (
+    bytes[0] === 0x00 &&
+    bytes[1] === 0x64 &&
+    bytes[2] === 0xff &&
+    bytes[3] === 0x9b &&
+    bytes[4] === 0x00 &&
+    bytes[5] === 0x01
+  ) {
+    return true;
+  }
   if (bytes[0] === 0x20 && bytes[1] === 0x02) return true; // 2002::/16 (6to4)
+  // 2001::/32 (Teredo) — tunnels to an IPv4 address embedded (obfuscated) in the low bits.
+  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00) return true;
+  if (bytes[0] === 0x01 && bytes.slice(1, 8).every((b) => b === 0)) return true; // 100::/64 discard-only
+  if (bytes[0] === 0xff) return true; // ff00::/8 multicast
   if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0x80) return true; // fe80::/10 link-local
   if (bytes[0] === 0xfe && (bytes[1] & 0xc0) === 0xc0) return true; // fec0::/10 deprecated site-local
   if ((bytes[0] & 0xfe) === 0xfc) return true; // fc00::/7 unique local
@@ -162,7 +177,7 @@ function isBlockedIPv6Bytes(bytes: number[]): boolean {
  * True for addresses a server-side fetch must never reach: loopback, private,
  * link-local (including the 169.254.169.254 cloud metadata endpoint), carrier-grade
  * NAT, multicast/reserved, and their IPv6 equivalents — including every IPv4-in-IPv6
- * spelling (mapped, compatible, NAT64) and non-canonical hex/expanded forms. Checked
+ * spelling (mapped, compatible, NAT64, 6to4, Teredo) and non-canonical hex/expanded forms. Checked
  * for EVERY hop, not just the first — a public URL is free to redirect somewhere
  * internal.
  *

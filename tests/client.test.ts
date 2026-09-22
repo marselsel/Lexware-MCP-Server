@@ -62,6 +62,18 @@ describe("LexwareClient", () => {
     expect(res.companyName).toBe("Acme");
   });
 
+  it("refuses a dot-segment id instead of letting URL resolution retarget the call", async () => {
+    const fetchFn = vi.fn(async () => json({})) as unknown as typeof fetch;
+    const client = makeClient(fetchFn);
+    for (const id of ["..", ".", "%2e%2e", ".%2E"]) {
+      await expect(client.get(`/v1/vouchers/${id}/files`), id).rejects.toThrow(/not Lexware ids/);
+    }
+    expect(fetchFn).not.toHaveBeenCalled();
+    // Dots inside an id are fine; only a whole "." / ".." segment is a dot-segment.
+    await client.get(`/v1/vouchers/${encodeURIComponent("a..b")}`);
+    expect(fetchFn).toHaveBeenCalledWith("https://api.test/v1/vouchers/a..b", expect.anything());
+  });
+
   it("retries on 429 and honors Retry-After seconds", async () => {
     const slept: number[] = [];
     let n = 0;

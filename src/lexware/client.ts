@@ -238,6 +238,12 @@ export class LexwareClient {
   }
 
   private buildUrl(path: string, query?: RequestOptions["query"]): string {
+    // `encodeURIComponent` leaves "." and ".." intact, and `new URL` resolves them (and
+    // their %2e spellings) as dot-segments — an id of ".." would silently retarget the
+    // call one level up (`/v1/vouchers/../files` → `/v1/files`). Refuse, don't normalize.
+    if (path.split("/").some((segment) => /^(?:\.|%2e){1,2}$/i.test(segment))) {
+      throw new Error(`Invalid id in ${JSON.stringify(path)}: "." and ".." are not Lexware ids.`);
+    }
     const url = new URL(`${this.baseUrl}${path.startsWith("/") ? path : `/${path}`}`);
     if (query) {
       for (const [k, v] of Object.entries(query)) {
