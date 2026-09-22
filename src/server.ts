@@ -67,7 +67,9 @@ const app = new Skybridge({
   // Per request, and must be synchronous — so it does registration and nothing else.
   //
   // It costs ~23ms of blocking CPU per request (53 tools at the read+drafts tier), which
-  // is most of the server's own time. Measured over HTTP against the built image:
+  // is most of the server's own time. That tier has 39 tools since the per-type get-<type>
+  // and render-<type>-pdf tools were folded into get-document and get-document-file, so
+  // read the figures below as an upper bound. Measured over HTTP against the built image:
   //
   //   /status        2.1ms      <- no registration
   //   initialize    29.5ms      <- pays for all 53 tool schemas and uses none of them

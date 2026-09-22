@@ -60,7 +60,7 @@ function call(spy: ReturnType<typeof vi.fn>): [string, string | undefined] {
 describe("document file downloads: PDF vs e-invoice XML", () => {
   it("asks for application/pdf by default", async () => {
     const spy = pdfOk();
-    await setup(spy as never)["render-invoice-pdf"]({ id: "inv-1", format: "pdf" });
+    await setup(spy as never)["get-document-file"]({ resourceType: "invoices", id: "inv-1", format: "pdf" });
     expect(call(spy)).toEqual(["/v1/invoices/inv-1/file", "application/pdf"]);
   });
 
@@ -70,11 +70,11 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
     // the published schema, so narrowing the enum to ["pdf"] fails here rather than
     // leaving a green suite behind a feature that can no longer be requested.
     const spy = xmlOk();
-    await register(spy as never).invoke("render-invoice-pdf", { id: "inv-1", format: "xml" });
+    await register(spy as never).invoke("get-document-file", { resourceType: "invoices", id: "inv-1", format: "xml" });
     expect(call(spy)).toEqual(["/v1/invoices/inv-1/file", "application/xml"]);
   });
 
-  it("threads the format through get-document-file too", async () => {
+  it("threads the format through for a credit note too", async () => {
     const spy = xmlOk();
     await register(spy as never).invoke("get-document-file", {
       resourceType: "credit-notes",
@@ -85,9 +85,8 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
   });
 
   it("publishes format on get-document-file, with xml among its values and pdf as default", () => {
-    // get-document-file picks its resource at call time, so it cannot gate `format` in its
-    // schema the way the render-* tools do — which makes it the one place where the
-    // parameter could silently disappear and only ever be noticed as "XML stopped working".
+    // get-document-file is the only way to download a sales document, so a `format` that
+    // silently disappeared from its schema would only ever be noticed as "XML stopped working".
     const { schemas } = register(pdfOk() as never);
     expect(Object.keys(schemas["get-document-file"])).toContain("format");
 
@@ -101,14 +100,15 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
     expect(published.properties.format.default).toBe("pdf");
   });
 
-  it("percent-encodes the id in both tools", async () => {
+  it("percent-encodes the id", async () => {
     const spy = pdfOk();
-    await setup(spy as never)["render-invoice-pdf"]({ id: "a/b", format: "pdf" });
+    await setup(spy as never)["get-document-file"]({ resourceType: "invoices", id: "a/b", format: "pdf" });
     expect(call(spy)[0]).toBe("/v1/invoices/a%2Fb/file");
   });
 
   it("reports the format in the result, not a hardcoded 'PDF'", async () => {
-    const result = (await setup(xmlOk() as never)["render-invoice-pdf"]({
+    const result = (await setup(xmlOk() as never)["get-document-file"]({
+      resourceType: "invoices",
       id: "inv-1",
       format: "xml",
     })) as { structuredContent: Record<string, unknown>; content: unknown };
@@ -124,7 +124,7 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
       throw new LexwareApiError(404, "Not Found");
     });
     await expect(
-      setup(notFound as never)["render-invoice-pdf"]({ id: "inv-1", format: "xml" }),
+      setup(notFound as never)["get-document-file"]({ resourceType: "invoices", id: "inv-1", format: "xml" }),
     ).rejects.toThrow(/not an XRechnung .* embedded in the PDF/s);
   });
 
@@ -138,7 +138,7 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
       throw new LexwareApiError(404, "Not Found");
     });
     const err = await setup(notFound as never)
-      ["render-invoice-pdf"]({ id: "nope", format: "pdf" })
+      ["get-document-file"]({ resourceType: "invoices", id: "nope", format: "pdf" })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(LexwareApiError);
@@ -146,55 +146,25 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
     expect((err as LexwareApiError).message).not.toMatch(/XRechnung|electronicDocumentProfile/);
   });
 
-  it("keeps the schema's e-invoice flag and the handler's refusal in agreement", async () => {
-    // Two mechanisms encode the same fact: the render-* tools publish `format` from
-    // DOC_TYPES[].eInvoice, and get-document-file refuses xml from E_INVOICE_RESOURCES.
-    // E_INVOICE_RESOURCES is derived from the flag precisely so they cannot disagree —
-    // this asserts the agreement, so the derivation cannot be quietly replaced by a
-    // hand-kept copy that then drifts.
-    const pairs: [resource: string, renderTool: string][] = [
-      ["invoices", "render-invoice-pdf"],
-      ["quotations", "render-quotation-pdf"],
-      ["credit-notes", "render-credit-note-pdf"],
-      ["order-confirmations", "render-order-confirmation-pdf"],
-      ["delivery-notes", "render-delivery-note-pdf"],
-      ["dunnings", "render-dunning-pdf"],
-      ["down-payment-invoices", "render-down-payment-invoice-pdf"],
-    ];
-
-    for (const [resource, renderTool] of pairs) {
-      const { handlers, schemas } = register(xmlOk() as never);
-      const rendererOffersXml = Object.keys(schemas[renderTool] ?? {}).includes("format");
-
+  it("accepts xml exactly for the resources that can be an e-invoice", async () => {
+    // Only invoices, credit notes and down payment invoices can be an XRechnung. Every
+    // other type reports electronicDocumentProfile "NONE", so xml there is refused before
+    // a request is spent on it.
+    const eInvoice = new Set(["invoices", "credit-notes", "down-payment-invoices"]);
+    for (const resource of [
+      "invoices",
+      "quotations",
+      "credit-notes",
+      "order-confirmations",
+      "delivery-notes",
+      "dunnings",
+      "down-payment-invoices",
+    ]) {
+      const { handlers } = register(xmlOk() as never);
       const outcome = await handlers["get-document-file"]({ resourceType: resource, id: "x", format: "xml" })
         .then(() => "accepted" as const)
         .catch((e: Error) => (/never has an e-invoice XML/.test(e.message) ? ("refused" as const) : "accepted"));
-
-      expect(outcome, `${resource}: renderer offers format=${rendererOffersXml}`).toBe(
-        rendererOffersXml ? "accepted" : "refused",
-      );
-    }
-  });
-
-  it("offers format only where an e-invoice is possible", () => {
-    // A quotation, order confirmation, delivery note or dunning always reports
-    // electronicDocumentProfile "NONE", so advertising format="xml" on those tools
-    // would offer a choice that can only fail.
-    const { schemas } = register(pdfOk() as never);
-    for (const name of ["render-invoice-pdf", "render-credit-note-pdf", "render-down-payment-invoice-pdf"]) {
-      // Assert the tool exists before inspecting it, so a vanished registration fails
-      // here with a readable message instead of Object.keys(undefined) throwing.
-      expect(schemas, name).toHaveProperty(name);
-      expect(Object.keys(schemas[name])).toContain("format");
-    }
-    for (const name of [
-      "render-quotation-pdf",
-      "render-order-confirmation-pdf",
-      "render-delivery-note-pdf",
-      "render-dunning-pdf",
-    ]) {
-      expect(schemas, name).toHaveProperty(name);
-      expect(Object.keys(schemas[name])).not.toContain("format");
+      expect(outcome, resource).toBe(eInvoice.has(resource) ? "accepted" : "refused");
     }
   });
 
@@ -218,7 +188,7 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
       throw new LexwareApiError(404, "Not Found", { IssueList: [{ type: "missing" }] });
     });
     const err = await setup(notFound as never)
-      ["render-invoice-pdf"]({ id: "inv-1", format: "xml" })
+      ["get-document-file"]({ resourceType: "invoices", id: "inv-1", format: "xml" })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(LexwareApiError);
@@ -235,13 +205,14 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
       throw new LexwareApiError(404, "Not Found");
     });
     await expect(
-      setup(notFound as never)["render-invoice-pdf"]({ id: "typo", format: "xml" }),
+      setup(notFound as never)["get-document-file"]({ resourceType: "invoices", id: "typo", format: "xml" }),
     ).rejects.toThrow(/no document exists with that id/);
   });
 
-  it("reports the normalized format in get-document-file too, not the raw input", async () => {
-    // Its render-*-pdf twin normalized; this one echoed the raw value, so a call made
-    // without the zod default reported `format: undefined` beside PDF bytes.
+  it("reports the normalized format, not the raw input", async () => {
+    // Called RAW, deliberately, not through invoke(): parsing first applies zod's
+    // .default("pdf"), so the raw and the normalized value agree and echoing the raw one
+    // looks correct. It once did echo it, reporting `format: undefined` beside PDF bytes.
     const result = (await setup(pdfOk() as never)["get-document-file"]({
       resourceType: "invoices",
       id: "inv-1",
@@ -258,27 +229,11 @@ describe("document file downloads: PDF vs e-invoice XML", () => {
       throw new LexwareApiError(409, "Conflict");
     });
     const err = await setup(conflict as never)
-      ["render-invoice-pdf"]({ id: "draft-1", format: "xml" })
+      ["get-document-file"]({ resourceType: "invoices", id: "draft-1", format: "xml" })
       .catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(LexwareApiError);
     expect((err as LexwareApiError).status).toBe(409);
     expect((err as LexwareApiError).message).not.toMatch(/XRechnung|electronicDocumentProfile/);
-  });
-
-  it("normalizes structuredContent.format on the render tools when none was given", async () => {
-    // The twin assertion on get-document-file exists because that tool echoed the raw
-    // input. Nothing pinned the render-* side, so the same bug could be reintroduced there.
-    //
-    // Called RAW, deliberately — this is the one assertion in the file that must NOT go
-    // through `invoke()`. Parsing first applies zod's .default("pdf"), so the raw and the
-    // normalized value agree and echoing the raw one looks correct. The defect only shows
-    // when the handler is driven without that default, which is exactly the totality the
-    // handler claims. (Mutation-checked: via invoke() this test does not catch it.)
-    const result = (await setup(pdfOk() as never)["render-invoice-pdf"]({ id: "inv-1" })) as {
-      structuredContent: Record<string, unknown>;
-    };
-    expect(result.structuredContent.format).toBe("pdf");
-    expect(result.structuredContent.mimeType).toBe("application/pdf");
   });
 });

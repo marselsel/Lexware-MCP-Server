@@ -128,12 +128,7 @@ const DOCUMENT_FILE_ACCEPT = {
 /**
  * Resources whose `/file` subresource can serve XML. Everything else always reports
  * `electronicDocumentProfile: "NONE"`, so XML is not merely absent, it is impossible.
- *
- * DERIVED from `DOC_TYPES`, not restated: the render-* tools decide whether to publish
- * the `format` parameter from the same `eInvoice` flag. Two hand-kept copies of one fact
- * drift silently, and either direction of drift is invisible — a type added here but not
- * there advertises a choice that is always refused locally, and the reverse requests XML
- * for a resource whose own render tool hides the option.
+ * Derived from `DOC_TYPES` rather than restated, so a new document type states the fact once.
  */
 const E_INVOICE_RESOURCES = new Set(DOC_TYPES.filter((d) => d.eInvoice).map((d) => d.path));
 
@@ -163,7 +158,7 @@ async function fetchDocumentFile(
 ): Promise<{ data: Buffer; contentType: string }> {
   // Refuse before spending a request when the resource can never have XML at all.
   // get-document-file picks its resource at call time, so this cannot be expressed in
-  // the schema the way the render-* tools do it.
+  // its schema.
   if (format === "xml" && !E_INVOICE_RESOURCES.has(resource)) {
     throw new Error(
       `A document in /${resource} never has an e-invoice XML: Lexware serves XML only for invoices, ` +
@@ -583,81 +578,12 @@ export function registerDocumentReadTools(
     },
   );
 
-  // get-<doctype> for every document type (invoices, quotations, credit-notes, …).
-  for (const doc of DOC_TYPES) {
-    server.registerTool(
-      {
-        name: `get-${doc.key}`,
-        title: `Get ${doc.label}`,
-        description: `Get a single ${doc.label} by id (full document including line items).`,
-        inputSchema: { id: z.string() },
-        annotations: RO,
-      },
-      async ({ id }) => {
-        const document = await client.get<Record<string, unknown>>(`/v1/${doc.path}/${encodeURIComponent(id)}`);
-        return { structuredContent: document, content: text(`${doc.label} ${id} retrieved.`) };
-      },
-    );
-  }
-
-  // render-<doctype>-pdf: download a document's finalized PDF.
-  for (const doc of DOC_TYPES) {
-    server.registerTool(
-      {
-        // The tool name keeps its `-pdf` suffix even though it can now also return XML:
-        // renaming a registered tool breaks every saved prompt and client config that
-        // refers to it, which is a poor trade for a suffix. The description carries it.
-        name: `render-${doc.key}-pdf`,
-        title: `Download ${doc.label} file`,
-        description: doc.eInvoice
-          ? `Download the finalized file of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
-            `inline — the PDF by default, or the e-invoice XML with format="xml" (XRechnung only). ` +
-            `The document must be FINALIZED — a draft has no file yet. (get-document-file is the generic form.)`
-          : `Download the finalized PDF of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
-            `inline. The document must be FINALIZED — a draft has no file yet. ` +
-            `(get-document-file is the generic form.)`,
-        // The format choice is offered only where XML is possible. A quotation, order
-        // confirmation, delivery note or dunning always reports
-        // `electronicDocumentProfile: "NONE"`, so advertising format="xml" there would be
-        // offering a choice that can only fail — the pattern #44 exists to remove.
-        // Spread rather than a ternary between two object literals. TypeScript normalizes
-        // such a ternary by giving the shorter branch an implicit `format?: undefined`,
-        // and `undefined` does not satisfy skybridge 2's `Record<string,
-        // StandardSchemaWithJSON>` constraint — so inference silently falls back and
-        // EVERY key, `id` included, is typed `unknown` in the handler. Same runtime object
-        // and same published JSON Schema; only the inference differs.
-        inputSchema: { id: z.string(), ...(doc.eInvoice ? { format: documentFormatParam } : {}) },
-        annotations: RO,
-      },
-      async ({ id, format }) => {
-        // Resolved here rather than relying on zod's default having been applied:
-        // anything that is not an explicit "xml" is the PDF, which keeps the handler
-        // total even when it is driven directly.
-        const wanted: DocumentFileFormat = format === "xml" ? "xml" : "pdf";
-        const { data, contentType } = await fetchDocumentFile(client, doc.path, id, wanted);
-        return binaryResult({
-          uri: `lexware://${doc.path}/${id}/file?format=${wanted}`,
-          data,
-          contentType,
-          structuredContent: {
-            resource: doc.path,
-            id,
-            format: wanted,
-            mimeType: contentType,
-            byteLength: data.length,
-          },
-          message: `Downloaded ${doc.label} ${id} as ${wanted.toUpperCase()} (${data.length} bytes).`,
-        });
-      },
-    );
-  }
-
   server.registerTool(
     {
       name: "get-voucher",
       title: "Get voucher",
       description:
-        "Get a single bookkeeping voucher by id — the full object, including contactId for referenced contacts (collective vouchers have only contactName) and files[] (ids of attached receipts). Note: voucherlist rows of type 'invoice' resolve via get-invoice, 'quotation' via get-quotation, etc. — only manually-booked vouchers resolve here. There is no festgeschrieben/lock flag in the payload; a locked (filed-VAT-period) voucher only surfaces as an error on a write attempt.",
+        "Get a single bookkeeping voucher by id — the full object, including contactId for referenced contacts (collective vouchers have only contactName) and files[] (ids of attached receipts). Note: only manually-booked vouchers resolve here; for any other voucherlist row (invoice, quotation, …) use get-document. There is no festgeschrieben/lock flag in the payload; a locked (filed-VAT-period) voucher only surfaces as an error on a write attempt.",
       inputSchema: { id: z.string() },
       annotations: RO,
     },
@@ -706,12 +632,16 @@ export function registerDocumentReadTools(
       name: "get-document",
       title: "Get document by voucher type",
       description:
-        "Fetch a financial document by id, auto-dispatching to the correct endpoint from its voucherlist " +
-        "`voucherType` — so you don't choose get-invoice vs get-voucher vs get-quotation, etc. Pass the id and " +
-        "the voucherType exactly as get-voucherlist returns it (e.g. 'invoice', 'purchaseinvoice', 'quotation').",
+        "Fetch any financial document by id — invoice, quotation, credit note, order confirmation, delivery " +
+        "note, dunning, down payment invoice, bookkeeping voucher or recurring template — dispatching to the " +
+        "right endpoint from its `voucherType`. Pass the voucherType exactly as get-voucherlist returns it " +
+        "(e.g. 'invoice', 'purchaseinvoice', 'quotation'); for a dunning, which the voucherlist does not " +
+        "list, use 'dunning'.",
       inputSchema: {
         id: z.string(),
-        voucherType: z.string().describe("The voucherlist voucherType for this id."),
+        voucherType: z
+          .enum(Object.keys(VOUCHERTYPE_TO_PATH) as [string, ...string[]])
+          .describe("The voucherlist voucherType for this id."),
       },
       annotations: RO,
     },
@@ -736,9 +666,10 @@ export function registerDocumentReadTools(
       name: "get-document-file",
       title: "Download document file",
       description:
-        "Download the finalized file of a document by resource + id (GET /v1/{resourceType}/{id}/file), " +
-        "returned inline — the PDF by default, or the e-invoice XML with format=\"xml\" (XRechnung only). " +
-        "The document must be FINALIZED. resourceType is the REST path, e.g. 'invoices', 'credit-notes'.",
+        "Download the finalized file of a sales document by resource + id (GET /v1/{resourceType}/{id}/file), " +
+        "returned inline — the PDF by default, or the e-invoice XML with format=\"xml\", which exists only for " +
+        "an XRechnung invoice, credit note or down payment invoice. The document must be FINALIZED — a draft " +
+        "has no file yet. resourceType is the REST path, e.g. 'invoices', 'credit-notes'.",
       inputSchema: {
         resourceType: z.enum(DOC_FILE_PATHS).describe("Document resource path, e.g. 'invoices', 'credit-notes'."),
         id: z.string(),

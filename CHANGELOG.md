@@ -63,6 +63,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   valid token from the issuer, including one minted for another app on it. WorkOS AuthKit supports
   Resource Indicators (RFC 8707) since May 2026, so the check can stay on there.
 
+### Removed
+- **Breaking:** the 14 per-type document tools — `get-invoice`, `get-quotation`, `get-credit-note`,
+  `get-order-confirmation`, `get-delivery-note`, `get-dunning`, `get-down-payment-invoice` and the
+  matching `render-<type>-pdf` tools. `get-document(id, voucherType)` and
+  `get-document-file(resourceType, id, format)` already did the same for every type, so the default
+  tier drops from 53 to 39 tools (about 14 fewer tool definitions in every conversation's context).
+  Anthropic's tool guidance is that selection gets worse past 30–50 tools. `get-document`'s
+  `voucherType` is now a published enum instead of a free string, and `get-document-file`'s
+  description names the types that can return XML — the one thing the per-type render tools said
+  in their schema. A saved prompt or client config that names a removed tool needs updating.
+
 ### Changed
 - Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.
   skybridge 2 runs on the v2 packages but still *depends* on 1.x, so 1.x stays hoisted in

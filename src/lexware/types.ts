@@ -29,8 +29,8 @@ export interface Paged<T> {
  * doing the same, because an unaccepted value here is advertised to the model
  * as a valid choice and can only fail.
  *
- * Dunnings and recurring templates are still reachable — via `get-dunning` /
- * `get-document` and `list-recurring-templates` respectively.
+ * Dunnings and recurring templates are still reachable — via `get-document` and
+ * `list-recurring-templates` respectively.
  */
 export const VOUCHER_TYPES = [
   "any",
