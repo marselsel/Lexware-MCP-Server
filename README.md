@@ -198,6 +198,8 @@ LEXWARE_API_KEY=... MCP_AUTH_TOKEN=... npm start
 | `LEXWARE_READ_ONLY` | `false` | Register only read tools (hard override) |
 | `LEXWARE_ENABLE_DRAFTS` | `true` | Enable create-draft tools |
 | `LEXWARE_ENABLE_FINALIZE` | `false` | Enable finalize / legally-binding tools (also enables Drafts) |
+| `LEXWARE_FINALIZE_ELICITATION` | `off` | Ask the **human** before `create-finalized-*` issues anything, through a confirmation form (MCP elicitation, protocol 2026-07-28) — `confirm_finalize` alone is a value the model sets. `when-supported`: the form where the client can show one, otherwise finalize as before. `required`: refuse on clients that cannot. Client support is uneven (claude.ai has none yet), so try it with yours first |
+| `LEXWARE_REQUEST_STATE_KEY` | random per process | HMAC key (≥ 32 bytes) signing the confirmation's round-trip state. Set it when more than one instance can serve the same client |
 | `LEXWARE_ENABLE_URL_UPLOAD` | `false` | Enable `upload-file-from-url` (server-side fetch). Requires the Drafts tier; does not enable it |
 | `LEXWARE_UPLOAD_ALLOWED_HOSTS` | Microsoft file-sharing hosts | Hosts `upload-file-from-url` may fetch from, comma-separated. Replaces the defaults; empty blocks everything |
 | `LEXWARE_API_BASE_URL` | `https://api.lexware.io` | API base URL |

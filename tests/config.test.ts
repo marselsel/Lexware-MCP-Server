@@ -258,6 +258,35 @@ describe("loadConfig", () => {
     expect(c.publicBaseUrl).toBe((c.auth as { resource: string }).resource);
   });
 
+  it("parses LEXWARE_FINALIZE_ELICITATION, off by default, and refuses anything else", () => {
+    expect(loadConfig(base()).finalizeElicitation).toBe("off");
+    const on = loadConfig({
+      ...base(),
+      LEXWARE_ENABLE_FINALIZE: "true",
+      LEXWARE_FINALIZE_ELICITATION: "Required",
+    } as NodeJS.ProcessEnv);
+    expect(on.finalizeElicitation).toBe("required");
+    expect(describeCapabilities(on)).toContain("finalize(elicit:required)");
+    expect(() => loadConfig({ ...base(), LEXWARE_FINALIZE_ELICITATION: "yes" } as NodeJS.ProcessEnv)).toThrow(
+      /must be one of off, when-supported, required/,
+    );
+  });
+
+  it("warns that finalize elicitation does nothing without the finalize tier", () => {
+    const c = loadConfig({ ...base(), LEXWARE_FINALIZE_ELICITATION: "when-supported" } as NodeJS.ProcessEnv);
+    expect(c.warnings.join(" ")).toMatch(/LEXWARE_FINALIZE_ELICITATION=when-supported has no effect/);
+  });
+
+  it("requires a request-state key of at least 32 bytes when one is set", () => {
+    expect(() => loadConfig({ ...base(), LEXWARE_REQUEST_STATE_KEY: "short" } as NodeJS.ProcessEnv)).toThrow(
+      /at least 32 bytes/,
+    );
+    expect(loadConfig({ ...base(), LEXWARE_REQUEST_STATE_KEY: "k".repeat(32) } as NodeJS.ProcessEnv).requestStateKey).toBe(
+      "k".repeat(32),
+    );
+    expect(loadConfig(base()).requestStateKey).toBeUndefined();
+  });
+
   it("builds upload links from the base when OAUTH_RESOURCE names the /mcp endpoint", () => {
     // Claude sends the URL users enter (https://host/mcp) as the RFC 8707 resource, so that
     // is what OAUTH_RESOURCE should be — but the upload routes live beside /mcp, not under it.

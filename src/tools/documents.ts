@@ -1,3 +1,4 @@
+import type { ServerContext } from "@modelcontextprotocol/server";
 import type { McpServer, StandardSchemaWithJSON } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
@@ -21,6 +22,7 @@ import {
   quotationInputShape,
   sizeParam,
 } from "./schemas.js";
+import type { FinalizeConfirmation } from "./finalize-confirmation.js";
 import { DESTRUCTIVE, LOCAL_RO, RO, WRITE, binaryResult, pagedResult, text } from "./shared.js";
 
 /**
@@ -831,8 +833,33 @@ export function registerDocumentDraftTools(server: McpServer, client: LexwareCli
   // PUT and keep their own update tools.)
 }
 
+/**
+ * The question put to the human before a finalize: enough of the document to recognise
+ * it, and what finalizing means. Every field is optional, so it degrades to the bare type.
+ */
+function finalizePrompt(label: string, input: Record<string, unknown>, precedingSalesVoucherId?: string): string {
+  const address = (input.address ?? {}) as { name?: unknown; contactId?: unknown };
+  const recipient =
+    typeof address.name === "string" ? address.name : typeof address.contactId === "string" ? `contact ${address.contactId}` : undefined;
+  const lines = Array.isArray(input.lineItems) ? input.lineItems.length : undefined;
+  const details = [
+    recipient && `for ${recipient}`,
+    typeof input.voucherDate === "string" && `dated ${input.voucherDate.slice(0, 10)}`,
+    lines !== undefined && `${lines} line item${lines === 1 ? "" : "s"}`,
+    precedingSalesVoucherId && `following up ${precedingSalesVoucherId}`,
+  ].filter(Boolean);
+  return (
+    `Issue this ${label}${details.length ? ` (${details.join(", ")})` : ""} in Lexware? ` +
+    "It becomes legally binding and can never be edited or deleted."
+  );
+}
+
 /** Finalizing / legally-binding tools for every finalizable document type. Finalize tier. */
-export function registerDocumentFinalizeTools(server: McpServer, client: LexwareClient): void {
+export function registerDocumentFinalizeTools(
+  server: McpServer,
+  client: LexwareClient,
+  confirmation?: FinalizeConfirmation,
+): void {
   for (const doc of DOC_TYPES) {
     if (!doc.schema || !doc.finalize) continue;
     server.registerTool(
@@ -853,7 +880,19 @@ export function registerDocumentFinalizeTools(server: McpServer, client: Lexware
         },
         annotations: DESTRUCTIVE,
       },
-      async ({ confirm_finalize: _confirm, precedingSalesVoucherId, additionalFields, ...input }) => {
+      async (args, extra) => {
+        const { confirm_finalize: _confirm, precedingSalesVoucherId, additionalFields, ...input } = args;
+        // The human's say, where the operator asked for it (LEXWARE_FINALIZE_ELICITATION):
+        // a confirmation form, re-entered with the answer, before anything is issued.
+        if (confirmation) {
+          const outcome = await confirmation.check(
+            `create-finalized-${doc.key}`,
+            args,
+            extra as unknown as ServerContext,
+            finalizePrompt(doc.label, input, precedingSalesVoucherId),
+          );
+          if (outcome) return outcome;
+        }
         const query: Record<string, string | boolean> = { finalize: true };
         if (precedingSalesVoucherId) query.precedingSalesVoucherId = precedingSalesVoucherId;
         const body = mergeBody(input, additionalFields);
