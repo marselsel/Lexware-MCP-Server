@@ -13,13 +13,6 @@ const READ_TOOLS = [
   "get-article",
   "get-voucherlist",
   "summarize-vouchers",
-  "get-invoice",
-  "get-quotation",
-  "get-credit-note",
-  "get-order-confirmation",
-  "get-delivery-note",
-  "get-dunning",
-  "get-down-payment-invoice",
   "get-voucher",
   "get-vouchers",
   "get-document",
@@ -34,15 +27,8 @@ const READ_TOOLS = [
   "get-recurring-template",
   "list-event-subscriptions",
   "get-event-subscription",
-  // expansion: file download, document PDF render, recurring-template list
+  // expansion: file download, recurring-template list
   "download-file",
-  "render-invoice-pdf",
-  "render-quotation-pdf",
-  "render-credit-note-pdf",
-  "render-delivery-note-pdf",
-  "render-order-confirmation-pdf",
-  "render-dunning-pdf",
-  "render-down-payment-invoice-pdf",
   "list-recurring-templates",
 ];
 const DRAFT_TOOLS = [

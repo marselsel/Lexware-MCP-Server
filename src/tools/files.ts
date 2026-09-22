@@ -11,7 +11,7 @@ export function registerFileReadTools(server: McpServer, client: LexwareClient):
       title: "Download file",
       description:
         "Download a file (a rendered document PDF or an uploaded receipt) by its file id. Returns the " +
-        "bytes inline as an embedded resource. File ids come from render-*-pdf, upload-file, or a voucher's files.",
+        "bytes inline as an embedded resource. File ids come from upload-file, an upload ticket, or a voucher's files[].",
       inputSchema: {
         id: z.string().describe("The Lexware file id."),
         accept: z

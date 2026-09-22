@@ -287,10 +287,24 @@ describe("get-document dispatch + get-voucher-file", () => {
     await handlers["get-document"]({ id: "y", voucherType: "quotation" });
     expect(get).toHaveBeenCalledWith("/v1/quotations/y");
     // recurringtemplate is not a valid voucherlist FILTER value (the API 400s on it, see
-    // voucherlist-enums.test.ts), but get-document takes a free string and still has to
-    // dispatch it to the recurring-templates endpoint rather than throw.
+    // voucherlist-enums.test.ts), but get-document still has to dispatch it to the
+    // recurring-templates endpoint rather than throw.
     await handlers["get-document"]({ id: "r", voucherType: "recurringtemplate" });
     expect(get).toHaveBeenCalledWith("/v1/recurring-templates/r");
+    // get-document is the only way to fetch a sales document (the per-type get-<type>
+    // tools are gone), so every one of the seven types must reach its own endpoint.
+    for (const [voucherType, path] of [
+      ["invoice", "invoices"],
+      ["quotation", "quotations"],
+      ["creditnote", "credit-notes"],
+      ["orderconfirmation", "order-confirmations"],
+      ["deliverynote", "delivery-notes"],
+      ["dunning", "dunnings"],
+      ["downpaymentinvoice", "down-payment-invoices"],
+    ]) {
+      await handlers["get-document"]({ id: "d1", voucherType });
+      expect(get).toHaveBeenLastCalledWith(`/v1/${path}/d1`);
+    }
     await expect(handlers["get-document"]({ id: "z", voucherType: "bogus" })).rejects.toThrow(
       /Unknown voucherType/,
     );
@@ -457,18 +471,9 @@ describe("delete tools: idempotent (a retried delete that already succeeded retu
   });
 });
 
-describe("render-*-pdf and get-document-file download /file", () => {
+describe("get-document-file downloads /file", () => {
   const mkClient = () =>
     ({ getBinary: vi.fn(async () => ({ data: Buffer.from("%PDF"), contentType: "application/pdf" })) }) as unknown as LexwareClient;
-
-  it("render-invoice-pdf hits /v1/invoices/{id}/file", async () => {
-    const client = mkClient();
-    const handlers = handlersFor((s, c) => registerDocumentReadTools(s, c, "https://app.test"), client);
-    await handlers["render-invoice-pdf"]({ id: "i9" });
-    // The accept type is now passed explicitly rather than left to getBinary's default;
-    // the header on the wire is the same.
-    expect(client.getBinary).toHaveBeenCalledWith("/v1/invoices/i9/file", "application/pdf");
-  });
 
   it("get-document-file hits /v1/{resourceType}/{id}/file", async () => {
     const client = mkClient();
