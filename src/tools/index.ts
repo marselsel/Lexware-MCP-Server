@@ -25,16 +25,41 @@ import { registerUploadTools } from "./uploads.js";
 import { registerUrlUploadTool } from "./url-upload.js";
 import { registerVoucherWriteTools } from "./vouchers.js";
 
+/** The part of a tool config {@link withAnnotationTitles} reads and rewrites. */
+interface TitledToolConfig {
+  title?: string;
+  annotations?: Record<string, unknown>;
+}
+
+/**
+ * Mirror every tool's `title` into `annotations.title`. The spec reads the top-level
+ * `title` first, but Anthropic's directory checklist asks for `annotations.title`, and a
+ * client may honour only one of them. One source, set in one place, so the two can't drift.
+ *
+ * Only `registerTool` is forwarded: that is the one method the register* functions call.
+ */
+function withAnnotationTitles(server: McpServer): McpServer {
+  const registerTool = server.registerTool.bind(server) as (config: TitledToolConfig, ...rest: unknown[]) => unknown;
+  return {
+    registerTool: (config: TitledToolConfig, ...rest: unknown[]) =>
+      registerTool(
+        config.title ? { ...config, annotations: { ...config.annotations, title: config.title } } : config,
+        ...rest,
+      ),
+  } as unknown as McpServer;
+}
+
 /**
  * Register MCP tools according to the resolved capability tiers. Only enabled
  * tiers are registered — a disabled tool is never advertised to the model.
  */
 export function registerTools(
-  server: McpServer,
+  mcpServer: McpServer,
   client: LexwareClient,
   config: Config,
   uploadTickets: TicketStore,
 ): void {
+  const server = withAnnotationTitles(mcpServer);
   const { capabilities } = config;
 
   // Read tier — always on.

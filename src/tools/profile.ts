@@ -7,6 +7,7 @@ export function registerProfileTools(server: McpServer, client: LexwareClient): 
   server.registerTool(
     {
       name: "get-profile",
+      title: "Get organization profile",
       description:
         "Get the authenticated Lexware organization's profile (company name, tax type, etc.). Useful to verify the connection works.",
       annotations: RO,

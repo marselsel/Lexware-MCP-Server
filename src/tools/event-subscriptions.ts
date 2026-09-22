@@ -8,6 +8,7 @@ export function registerEventSubscriptionReadTools(server: McpServer, client: Le
   server.registerTool(
     {
       name: "list-event-subscriptions",
+      title: "List webhook subscriptions",
       description: "List webhook event subscriptions configured for this organization.",
       annotations: RO,
     },
@@ -20,6 +21,7 @@ export function registerEventSubscriptionReadTools(server: McpServer, client: Le
   server.registerTool(
     {
       name: "get-event-subscription",
+      title: "Get webhook subscription",
       description: "Get a single event subscription by id.",
       inputSchema: { id: z.string() },
       annotations: RO,
@@ -42,6 +44,7 @@ export function registerEventSubscriptionWriteTools(server: McpServer, client: L
   server.registerTool(
     {
       name: "create-event-subscription",
+      title: "Create webhook subscription",
       description:
         "Subscribe a callback URL to a Lexware event type (webhook), e.g. eventType 'invoice.created'. Sends future " +
         "event notifications to an EXTERNAL URL, so treat the target as trusted. The callback URL must be https:// " +
@@ -80,6 +83,7 @@ export function registerEventSubscriptionDeleteTools(server: McpServer, client: 
   server.registerTool(
     {
       name: "delete-event-subscription",
+      title: "Delete webhook subscription",
       description: "Delete (unsubscribe) an event subscription by id. Stops the webhook; recreate it to re-subscribe.",
       inputSchema: { id: z.string() },
       annotations: DESTRUCTIVE,

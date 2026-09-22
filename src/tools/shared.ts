@@ -7,7 +7,14 @@ export const DEFAULT_PAGE_SIZE = 25;
 
 /** Tool annotations, shared so semantics can't drift across tool files. */
 export const RO = { readOnlyHint: true, openWorldHint: true, destructiveHint: false } as const;
+/** Additive: creates something new and overwrites nothing. */
 export const WRITE = { readOnlyHint: false, openWorldHint: true, destructiveHint: false } as const;
+/**
+ * Overwrites or deletes existing data (every update is a full-resource PUT), or cannot be
+ * undone (finalizing issues a legally binding document). Clients ask a human before
+ * running these, and for finalize that prompt is the real gate: `confirm_finalize` is a
+ * value the model sets itself.
+ */
 export const DESTRUCTIVE = { readOnlyHint: false, openWorldHint: true, destructiveHint: true } as const;
 /** Read-only and purely local (no external reach), e.g. building a deeplink string. */
 export const LOCAL_RO = { readOnlyHint: true, openWorldHint: false, destructiveHint: false } as const;

@@ -81,6 +81,7 @@ export function registerUrlUploadTool(
   server.registerTool(
     {
       name: "upload-file-from-url",
+      title: "Upload file from URL",
       description:
         "Download a file from a pre-authenticated share link and store it in Lexware, without the bytes " +
         "passing through the model context — e.g. an email attachment saved to OneDrive/SharePoint via the " +

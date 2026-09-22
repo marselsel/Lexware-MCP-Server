@@ -14,13 +14,14 @@ import {
   sizeParam,
   versionParam,
 } from "./schemas.js";
-import { RO, WRITE, deepMergePatch, mergeAddresses, pagedResult, text } from "./shared.js";
+import { DESTRUCTIVE, RO, WRITE, deepMergePatch, mergeAddresses, pagedResult, text } from "./shared.js";
 
 /** Read tools for contacts. Always registered. */
 export function registerContactReadTools(server: McpServer, client: LexwareClient): void {
   server.registerTool(
     {
       name: "list-contacts",
+      title: "List contacts",
       description:
         "List/search contacts (customers and vendors). Optional filters; results are paged (use page/size).",
       inputSchema: {
@@ -69,6 +70,7 @@ export function registerContactReadTools(server: McpServer, client: LexwareClien
   server.registerTool(
     {
       name: "get-contact",
+      title: "Get contact",
       description: "Get a single contact by id.",
       inputSchema: { id: z.string() },
       annotations: RO,
@@ -85,6 +87,7 @@ export function registerContactDraftTools(server: McpServer, client: LexwareClie
   server.registerTool(
     {
       name: "create-contact",
+      title: "Create contact",
       description:
         "Create a new contact (customer and/or vendor). Provide roles plus either a person (lastName required) or a company (name required).",
       inputSchema: { ...contactInputShape, additionalFields: additionalFieldsParam },
@@ -106,6 +109,7 @@ export function registerContactDraftTools(server: McpServer, client: LexwareClie
   server.registerTool(
     {
       name: "update-contact",
+      title: "Update contact",
       description:
         "Update a contact. Read-modify-write: the current contact is fetched and your fields are merged over it, " +
         "so existing addresses, emailAddresses and roles are preserved — lexoffice PUT otherwise replaces the whole " +
@@ -118,7 +122,7 @@ export function registerContactDraftTools(server: McpServer, client: LexwareClie
         version: versionParam("get-contact"),
         ...contactUpdateShape,
       },
-      annotations: WRITE,
+      annotations: DESTRUCTIVE,
     },
     async ({ id, version, ...fields }) => {
       // Read-modify-write: load the current contact and merge the caller's fields over

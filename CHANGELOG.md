@@ -20,6 +20,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   must already be on the allowlist.
 - CI runs with a read-only `GITHUB_TOKEN` and pins actions to commit SHAs (Dependabot keeps them
   current). `.npmrc` is gitignored so an npm auth token can't be committed.
+- `create-finalized-*` and the three update tools (`update-contact`, `update-article`,
+  `update-voucher`) are now annotated `destructiveHint: true`. They were `false`, so a client had no
+  reason to ask a human before the model issued a legally binding document — `confirm_finalize` is
+  a value the model sets itself. The updates qualify because each one is a full-resource PUT that
+  overwrites the record. Claude's connector review requires this annotation for tools that modify
+  or delete data.
+
+### Added
+- Every tool has a human-readable `title` (e.g. "Issue invoice (finalize, irreversible)"), which
+  clients show instead of the tool name. It is set both as the top-level `title` and as
+  `annotations.title`: the spec reads the first, Anthropic's directory checklist asks for the second.
+  A test pins titles, and which tools are read-only and destructive, for every tier.
 
 ### Changed
 - Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.
