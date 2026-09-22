@@ -39,6 +39,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it names is actually registered for that tier. `serverInfo` also gains a `title`, `description`
   and `websiteUrl`.
 
+### Fixed
+- A signed-in user whose email domain is not on `OAUTH_ALLOWED_EMAIL_DOMAINS` now gets a plain `403`
+  with no `WWW-Authenticate` challenge. It was a `403` carrying `error="insufficient_scope"`, which
+  is the MCP scope step-up signal: Claude answers it by sending the user back through sign-in, which
+  cannot help, since no scope changes an email domain — so a refused user was looped instead of told.
+  Claude treats only a challenge-free `403` as final. Authentication (the SDK's bearer gate: `401`
+  plus a challenge for a missing or invalid token) and the domain decision are now separate steps,
+  mounted together through `oauthGate` so neither can be wired up without the other.
+
 ### Changed
 - Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.
   skybridge 2 runs on the v2 packages but still *depends* on 1.x, so 1.x stays hoisted in

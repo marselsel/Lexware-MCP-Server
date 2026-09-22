@@ -1,10 +1,10 @@
 import express, { type Request, type Response } from "express";
-import { mcpAuthMetadataRouter, requireBearerAuth, Skybridge } from "skybridge/server";
+import { mcpAuthMetadataRouter, Skybridge } from "skybridge/server";
 import { bearerAuthMiddleware } from "./auth.js";
 import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { buildServerInstructions } from "./instructions.js";
 import { LexwareClient } from "./lexware/client.js";
-import { advertisedScopes, buildOAuthMetadata, createAccessTokenVerifier } from "./oauth.js";
+import { advertisedScopes, buildOAuthMetadata, oauthGate } from "./oauth.js";
 import { registerTools } from "./tools/index.js";
 import { INERT_APP_JSON } from "./server-body-parsing.js";
 import { registerUploadRoutes } from "./uploads/routes.js";
@@ -144,13 +144,7 @@ if (config.auth.mode === "oauth") {
   // followed by the resource's path (so a path-bearing resource resolves correctly).
   const resUrl = new URL(oauth.resource);
   const resPath = resUrl.pathname === "/" ? "" : resUrl.pathname.replace(/\/$/, "");
-  app.use(
-    "/mcp",
-    requireBearerAuth({
-      verifier: { verifyAccessToken: createAccessTokenVerifier(oauth) },
-      resourceMetadataUrl: `${resUrl.origin}/.well-known/oauth-protected-resource${resPath}`,
-    }),
-  );
+  app.use("/mcp", ...oauthGate(oauth, `${resUrl.origin}/.well-known/oauth-protected-resource${resPath}`));
 } else if (config.auth.mode === "static") {
   app.use("/mcp", bearerAuthMiddleware(config.auth.token));
 }
