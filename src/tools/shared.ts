@@ -50,6 +50,15 @@ export function withJsonText<T>(result: T): T {
   return { ...result, content: [...content, json] };
 }
 
+// No tool declares an `outputSchema`, deliberately (reviewed 2026-09). The spec makes one
+// binding — "Servers MUST provide structured results that conform to this schema" — and the
+// SDK turns any mismatch into an error result, while Lexware's payloads are open-ended and
+// grow fields without notice. Claude's clients also still trip over declared output schemas:
+// tool calls failing outright (anthropics/claude-ai-mcp#673), `anyOf` breaking the connector
+// (#485), Desktop rejecting schemas that are not JSON Schema 2020-12 (#1016). The JSON text
+// block from withJsonText is what makes results readable to the model instead. Revisit once
+// those are fixed; a test in tools.test.ts pins the decision until then.
+
 /** Standard result for a paged list tool: the Paged envelope + a one-line summary. */
 export function pagedResult<T>(result: Paged<T>, noun: string) {
   // An empty result set has totalPages 0; render "page 1/1" rather than the

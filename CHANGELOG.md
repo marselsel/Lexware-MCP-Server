@@ -76,6 +76,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checks, so it silently described an empty tool surface. Nothing consumed it.
 
 ### Documented
+- Why no tool declares an `outputSchema`: the spec makes it binding, Lexware's payloads are
+  open-ended, and Claude's clients still fail on declared output schemas (anthropics/claude-ai-mcp
+  #673, #485, #1016). Recorded in `src/tools/shared.ts` and pinned by a test, so adding one is a
+  deliberate choice.
+- The README no longer says a static bearer token cannot work on claude.ai: an organization admin
+  can add the connector with a static header (beta, limited organizations). OAuth stays the
+  recommendation wherever users sign in individually.
 - What the per-request tool registration costs, measured over HTTP against the built image: `/status`
   2.1ms, `initialize` 29.5ms, `tools/list` 41.3ms. ~79% of it is the SDK converting zod to JSON
   Schema on every registration — unreachable from here, since zod does not memoize the conversion
