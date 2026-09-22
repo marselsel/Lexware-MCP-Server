@@ -11,6 +11,7 @@ import {
   isEmailDomainAllowed,
   isEmailVerified,
   oauthGate,
+  protectedResourceMetadataUrl,
   requireAllowedEmailDomain,
   type OAuthSettings,
   type VerifierDeps,
@@ -370,6 +371,38 @@ async function protectedResourceDoc(oauth: OAuthSettings): Promise<Record<string
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
+
+describe("protectedResourceMetadataUrl", () => {
+  it("inserts the well-known segment before the resource path", () => {
+    // The recommended resource is the /mcp endpoint itself — the URL users enter in Claude.
+    expect(protectedResourceMetadataUrl("https://mcp.example.com/mcp")).toBe(
+      "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+    );
+    expect(protectedResourceMetadataUrl("https://mcp.example.com")).toBe(
+      "https://mcp.example.com/.well-known/oauth-protected-resource",
+    );
+  });
+
+  it("names the path mcpAuthMetadataRouter actually serves for a /mcp resource", async () => {
+    const resource = "https://mcp.example.com/mcp";
+    const oauth = settings({ resource });
+    const app = express();
+    app.use(
+      mcpAuthMetadataRouter({ oauthMetadata: buildOAuthMetadata(oauth), resourceServerUrl: new URL(resource) }),
+    );
+    const server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const path = new URL(protectedResourceMetadataUrl(resource)).pathname;
+      const res = await fetch(`http://127.0.0.1:${port}${path}`);
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { resource: string }).resource).toBe(resource);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
 
 describe("protected-resource metadata (RFC 9728)", () => {
   it("omits scopes_supported entirely when nothing is configured", async () => {

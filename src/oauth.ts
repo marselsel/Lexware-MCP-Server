@@ -110,6 +110,18 @@ export function advertisedScopes(oauth: OAuthSettings): string[] | undefined {
   return oauth.scopesSupported?.length ? oauth.scopesSupported : undefined;
 }
 
+/**
+ * Where the protected-resource metadata for `resource` is served (RFC 9728 §3.1): the
+ * well-known segment inserted between the origin and the resource's path. For the
+ * recommended `https://host/mcp` that is `https://host/.well-known/oauth-protected-resource/mcp`,
+ * which is where `mcpAuthMetadataRouter` serves it and what the 401 challenge must name.
+ */
+export function protectedResourceMetadataUrl(resource: string): string {
+  const url = new URL(resource);
+  const path = url.pathname === "/" ? "" : url.pathname.replace(/\/$/, "");
+  return `${url.origin}/.well-known/oauth-protected-resource${path}`;
+}
+
 /** Network timeout for the userinfo lookup so a hung IdP can't block a request indefinitely. */
 const USERINFO_TIMEOUT_MS = 10_000;
 
