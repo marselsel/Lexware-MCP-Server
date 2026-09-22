@@ -9,6 +9,8 @@ import {
   deleteIdempotent,
   mergeAddresses,
   pagedResult,
+  text,
+  withJsonText,
 } from "../src/tools/shared.js";
 import { mergeBody } from "../src/tools/schemas.js";
 
@@ -221,5 +223,42 @@ describe("binaryResult", () => {
         blob: data.toString("base64"),
       },
     });
+  });
+});
+
+describe("withJsonText", () => {
+  it("appends the structuredContent as compact JSON after the summary", () => {
+    const out = withJsonText({ structuredContent: { id: "i1", lineItems: [{ name: "x" }] }, content: text("Invoice i1 retrieved.") });
+    expect(out.content).toEqual([
+      { type: "text", text: "Invoice i1 retrieved." },
+      { type: "text", text: '{"id":"i1","lineItems":[{"name":"x"}]}' },
+    ]);
+  });
+
+  it("keeps a binary result's embedded file and adds the metadata after it", () => {
+    const data = Buffer.from("%PDF");
+    const out = withJsonText(
+      binaryResult({ uri: "lexware://files/f1", data, contentType: "application/pdf", structuredContent: { fileId: "f1" }, message: "Downloaded." }),
+    );
+    expect(out.content.map((c) => c.type)).toEqual(["text", "resource", "text"]);
+    expect(out.content[2]).toEqual({ type: "text", text: '{"fileId":"f1"}' });
+  });
+
+  it("normalizes a string or missing content before appending", () => {
+    expect(withJsonText({ structuredContent: { a: 1 }, content: "hi" }).content).toEqual([
+      { type: "text", text: "hi" },
+      { type: "text", text: '{"a":1}' },
+    ]);
+    expect(withJsonText({ structuredContent: { a: 1 } }).content).toEqual([{ type: "text", text: '{"a":1}' }]);
+  });
+
+  it("leaves error results and results without an object structuredContent untouched", () => {
+    const error = { isError: true, structuredContent: { a: 1 }, content: text("boom") };
+    expect(withJsonText(error)).toBe(error);
+    const plain = { content: text("ok") };
+    expect(withJsonText(plain)).toBe(plain);
+    // The SDK already serializes a non-object structuredContent itself.
+    const scalar = { structuredContent: 42, content: text("n") };
+    expect(withJsonText(scalar)).toBe(scalar);
   });
 });

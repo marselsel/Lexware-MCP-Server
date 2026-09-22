@@ -20,6 +20,7 @@ import {
 } from "./event-subscriptions.js";
 import { registerFileReadTools, registerFileWriteTools } from "./files.js";
 import { registerProfileTools } from "./profile.js";
+import { withJsonText } from "./shared.js";
 import { registerReferenceReadTools } from "./reference.js";
 import { registerUploadTools } from "./uploads.js";
 import { registerUrlUploadTool } from "./url-upload.js";
@@ -50,6 +51,21 @@ function withAnnotationTitles(server: McpServer): McpServer {
 }
 
 /**
+ * Give every tool result a serialized copy of its `structuredContent` as text (see
+ * {@link withJsonText}), by wrapping each handler once here instead of in ~40 of them.
+ */
+function withJsonTextResults(server: McpServer): McpServer {
+  const registerTool = server.registerTool.bind(server) as (
+    config: unknown,
+    handler: (...args: unknown[]) => unknown,
+  ) => unknown;
+  return {
+    registerTool: (config: unknown, handler: (...args: unknown[]) => unknown) =>
+      registerTool(config, async (...args: unknown[]) => withJsonText(await handler(...args))),
+  } as unknown as McpServer;
+}
+
+/**
  * Register MCP tools according to the resolved capability tiers. Only enabled
  * tiers are registered — a disabled tool is never advertised to the model.
  */
@@ -59,7 +75,7 @@ export function registerTools(
   config: Config,
   uploadTickets: TicketStore,
 ): void {
-  const server = withAnnotationTitles(mcpServer);
+  const server = withJsonTextResults(withAnnotationTitles(mcpServer));
   const { capabilities } = config;
 
   // Read tier — always on.

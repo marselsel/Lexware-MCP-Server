@@ -38,6 +38,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   creation, the upload-ticket flow. Built from the enabled tiers, and a test checks that every tool
   it names is actually registered for that tier. `serverInfo` also gains a `title`, `description`
   and `websiteUrl`.
+- Every tool result now also carries its `structuredContent` as a compact JSON text block, after the
+  one-line summary. The spec says a tool returning structured content SHOULD do this, and it matters
+  here: each tool's text was only a summary ("Invoice X retrieved."), so a client that shows the model
+  just `content` — Anthropic's own tool-design reference warns "not all hosts read
+  `structuredContent` yet" — never saw the document itself. Applied once, in `registerTools`, to every
+  handler; error results and non-object `structuredContent` (which the SDK already serializes) are
+  left alone.
 
 ### Fixed
 - A signed-in user whose email domain is not on `OAUTH_ALLOWED_EMAIL_DOMAINS` now gets a plain `403`

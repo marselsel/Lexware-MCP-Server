@@ -24,6 +24,32 @@ export function text(message: string): [{ type: "text"; text: string }] {
   return [{ type: "text", text: message }];
 }
 
+/**
+ * Append `structuredContent`, serialized, as a final text block.
+ *
+ * The spec: "a tool that returns structured content SHOULD also return the serialized JSON
+ * in a TextContent block". Not a formality here — every tool's text is a one-line summary
+ * ("Invoice X retrieved."), and a client that shows the model only `content` would otherwise
+ * never see the document. Anthropic's own tool-design reference: "not all hosts read
+ * `structuredContent` yet". Compact JSON, since it is there for the model, not for a reader.
+ *
+ * The SDK already does this for a non-object `structuredContent`, so only objects are
+ * handled; results without one, and error results, pass through untouched.
+ */
+export function withJsonText<T>(result: T): T {
+  if (typeof result !== "object" || result === null) return result;
+  const r = result as { structuredContent?: unknown; content?: unknown; isError?: boolean };
+  if (r.isError || typeof r.structuredContent !== "object" || r.structuredContent === null) return result;
+  const json = { type: "text" as const, text: JSON.stringify(r.structuredContent) };
+  const content =
+    r.content === undefined
+      ? []
+      : Array.isArray(r.content)
+        ? r.content
+        : [typeof r.content === "string" ? { type: "text" as const, text: r.content } : r.content];
+  return { ...result, content: [...content, json] };
+}
+
 /** Standard result for a paged list tool: the Paged envelope + a one-line summary. */
 export function pagedResult<T>(result: Paged<T>, noun: string) {
   // An empty result set has totalPages 0; render "page 1/1" rather than the

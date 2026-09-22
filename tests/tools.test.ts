@@ -210,3 +210,24 @@ describe("registerTools (tiered registration)", () => {
     expect(names).toEqual([...READ_TOOLS, ...DRAFT_TOOLS, ...FINALIZE_TOOLS].sort());
   });
 });
+
+describe("tool results carry the structured data as text", () => {
+  it("adds the serialized structuredContent to what every registered handler returns", async () => {
+    // Through registerTools, so the wiring is what is tested, not only the helper: a client
+    // that shows the model only `content` must still see the document, not just a summary.
+    const handlers: Record<string, (args: unknown) => Promise<{ content: { type: string; text?: string }[]; structuredContent: unknown }>> = {};
+    const fakeServer = {
+      registerTool(cfg: { name: string }, handler: (typeof handlers)[string]) {
+        handlers[cfg.name] = handler;
+        return fakeServer;
+      },
+    } as unknown as McpServer;
+    const profile = { organizationId: "org-1", companyName: "Acme GmbH" };
+    const client = { get: async () => profile } as unknown as LexwareClient;
+    registerTools(fakeServer, client, loadConfig(env()), new TicketStore());
+
+    const result = await handlers["get-profile"]({});
+    expect(result.content.at(-1)).toEqual({ type: "text", text: JSON.stringify(result.structuredContent) });
+    expect(result.content.at(-1)?.text).toContain("Acme GmbH");
+  });
+});
