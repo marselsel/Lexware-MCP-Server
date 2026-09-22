@@ -258,6 +258,42 @@ describe("loadConfig", () => {
     expect(c.publicBaseUrl).toBe((c.auth as { resource: string }).resource);
   });
 
+  it("builds upload links from the base when OAUTH_RESOURCE names the /mcp endpoint", () => {
+    // Claude sends the URL users enter (https://host/mcp) as the RFC 8707 resource, so that
+    // is what OAUTH_RESOURCE should be — but the upload routes live beside /mcp, not under it.
+    const c = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      OAUTH_RESOURCE: "https://mcp.example.com/mcp",
+    } as NodeJS.ProcessEnv);
+    expect((c.auth as { resource: string }).resource).toBe("https://mcp.example.com/mcp");
+    expect(c.publicBaseUrl).toBe("https://mcp.example.com");
+    // Same for SERVER_URL, and a deployment under a path prefix keeps its prefix.
+    expect(
+      loadConfig({ ...base(), SERVER_URL: "https://mcp.example.com/lexware/mcp" } as NodeJS.ProcessEnv).publicBaseUrl,
+    ).toBe("https://mcp.example.com/lexware");
+    // Only a whole trailing /mcp segment is dropped.
+    expect(
+      loadConfig({ ...base(), SERVER_URL: "https://mcp.example.com/lexware-mcp" } as NodeJS.ProcessEnv).publicBaseUrl,
+    ).toBe("https://mcp.example.com/lexware-mcp");
+  });
+
+  it("warns when OAuth runs with the audience check off", () => {
+    const off = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      OAUTH_RESOURCE: "https://mcp.example.com/mcp",
+      OAUTH_VERIFY_AUDIENCE: "false",
+    } as NodeJS.ProcessEnv);
+    expect(off.warnings.join(" ")).toMatch(/OAUTH_VERIFY_AUDIENCE=false .* ANY valid token/);
+    const on = loadConfig({
+      LEXWARE_API_KEY: "k",
+      OAUTH_ISSUER: "https://auth.example.com",
+      OAUTH_RESOURCE: "https://mcp.example.com/mcp",
+    } as NodeJS.ProcessEnv);
+    expect(on.warnings).toEqual([]);
+  });
+
   it("falls back to loopback on the CONFIGURED port when no public URL is set", () => {
     expect(loadConfig(base()).publicBaseUrl).toBe("http://127.0.0.1:8080");
     expect(loadConfig({ ...base(), PORT: "9443" } as NodeJS.ProcessEnv).publicBaseUrl).toBe("http://127.0.0.1:9443");

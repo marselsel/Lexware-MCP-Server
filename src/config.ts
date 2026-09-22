@@ -197,6 +197,19 @@ function validateIssuerUrl(raw: string): string {
 }
 
 /**
+ * The server's base URL from a configured URL that may name the MCP endpoint itself.
+ *
+ * `OAUTH_RESOURCE` SHOULD be the endpoint (`https://host/mcp`): that is the URL users
+ * enter in Claude, which Claude sends as the RFC 8707 `resource` and expects the
+ * protected-resource metadata to repeat exactly. The upload routes live beside `/mcp`,
+ * not under it, so links are built from the base — without this, following the advice
+ * would hand out `https://host/mcp/upload/…`, which does not exist.
+ */
+function withoutMcpPath(url: string): string {
+  return url.replace(/\/mcp$/, "");
+}
+
+/**
  * Resolve this server's public base URL — in EVERY auth mode, not just OAuth.
  *
  * `OAUTH_RESOURCE` first, so an OAuth deployment can never drift from the value its
@@ -212,9 +225,9 @@ function validateIssuerUrl(raw: string): string {
  */
 function resolvePublicBaseUrl(env: NodeJS.ProcessEnv, port: number): string {
   const resource = env.OAUTH_RESOURCE?.trim();
-  if (resource) return normalizeUrl(resource, resource, "OAUTH_RESOURCE");
+  if (resource) return withoutMcpPath(normalizeUrl(resource, resource, "OAUTH_RESOURCE"));
   const serverUrl = env.SERVER_URL?.trim();
-  if (serverUrl) return normalizeUrl(serverUrl, serverUrl, "SERVER_URL");
+  if (serverUrl) return withoutMcpPath(normalizeUrl(serverUrl, serverUrl, "SERVER_URL"));
   // The loopback fallback must name the port the server actually LISTENS on.
   // Under `skybridge dev` that is `__PORT` — skybridge picks it itself (~3000)
   // and plain PORT is never consulted; using `port` (default 8080) there handed
@@ -410,6 +423,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     warnings.push(
       "LEXWARE_ENABLE_DRAFTS=false was overridden to true because LEXWARE_ENABLE_FINALIZE=true — the " +
         "finalize tier issues binding versions of draft documents and cannot run without the drafts tier.",
+    );
+  }
+  if (auth.mode === "oauth" && !auth.verifyAudience) {
+    warnings.push(
+      "OAUTH_VERIFY_AUDIENCE=false — this server accepts ANY valid token from the issuer, including one " +
+        "minted for a different app on the same issuer (confused deputy). Register OAUTH_RESOURCE as a " +
+        "Resource Indicator with your provider (WorkOS AuthKit supports it) so tokens carry it as `aud`, " +
+        "then remove OAUTH_VERIFY_AUDIENCE.",
     );
   }
   // Outside OAuth mode, OAUTH_RESOURCE has exactly one remaining effect — it wins

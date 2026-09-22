@@ -54,6 +54,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Claude treats only a challenge-free `403` as final. Authentication (the SDK's bearer gate: `401`
   plus a challenge for a missing or invalid token) and the domain decision are now separate steps,
   mounted together through `oauthGate` so neither can be wired up without the other.
+- `OAUTH_RESOURCE` can now be the MCP endpoint (`https://host/mcp`), which is what it should be:
+  Claude sends the URL users enter, path included, as the RFC 8707 `resource`, and requires the
+  protected-resource metadata to name it exactly. Upload links are built from the same URL minus a
+  trailing `/mcp` — before, following that advice produced `https://host/mcp/upload/…`, a route
+  that does not exist. The metadata URL named in the 401 challenge moved into a tested helper.
+- Startup warns when OAuth runs with `OAUTH_VERIFY_AUDIENCE=false`: the server then accepts any
+  valid token from the issuer, including one minted for another app on it. WorkOS AuthKit supports
+  Resource Indicators (RFC 8707) since May 2026, so the check can stay on there.
 
 ### Changed
 - Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.

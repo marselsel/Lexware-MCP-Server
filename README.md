@@ -132,14 +132,27 @@ neither set, the server refuses to start unless `MCP_ALLOW_UNAUTHENTICATED=true`
 
 ### Connecting as a custom connector (OAuth)
 
-1. In your provider, create an app, enable Dynamic Client Registration (or pre-register
-   Claude's redirect `https://claude.ai/api/mcp/auth_callback`), and set this server's URL as
-   the **Resource Indicator** / audience.
-2. Deploy with `OAUTH_ISSUER`, `OAUTH_RESOURCE` (= the public URL), and optionally
-   `OAUTH_ALLOWED_EMAIL_DOMAINS`.
-3. In the Claude app → **Connectors → Add custom connector**, enter the server URL
-   (`https://…/mcp`). Claude discovers the authorization server via
-   `/.well-known/oauth-protected-resource` and walks you through sign-in.
+Use the MCP endpoint URL — `https://…/mcp`, exactly as users will enter it in Claude — in all
+three places below. Claude sends that URL (path included) as the RFC 8707 `resource` when it
+asks for a token, and expects this server's protected-resource metadata to name it exactly.
+
+1. In your provider, register that URL as a **Resource Indicator** (the token audience).
+   Tokens then carry it as `aud`, which this server checks (`OAUTH_VERIFY_AUDIENCE`, on by
+   default). With [WorkOS AuthKit](https://workos.com/docs/authkit/mcp): add it under the MCP
+   Auth resource indicators in the dashboard — without one, AuthKit ignores the requested
+   `resource` and stamps every token with an environment-wide default audience.
+2. Let Claude register itself as a client. Prefer **Client ID Metadata Documents** (CIMD),
+   Claude's recommended option; in WorkOS it is off by default, under **Connect →
+   Configuration**. Claude uses CIMD only when the issuer's metadata advertises it. Dynamic
+   Client Registration still works, but the MCP spec deprecated it in 2026-07-28 and it lets
+   anyone register a client on your tenant — enable it only for clients without CIMD. Or
+   pre-register Claude's redirect `https://claude.ai/api/mcp/auth_callback` and give users the
+   client ID.
+3. Deploy with `OAUTH_ISSUER`, `OAUTH_RESOURCE=https://…/mcp`, and optionally
+   `OAUTH_ALLOWED_EMAIL_DOMAINS`. Upload links are built from the same URL without `/mcp`.
+4. In the Claude app → **Connectors → Add custom connector**, enter `https://…/mcp`. Claude
+   discovers the authorization server via the protected-resource metadata and walks you
+   through sign-in.
 
 ## Quick start (Docker)
 
@@ -169,13 +182,13 @@ LEXWARE_API_KEY=... MCP_AUTH_TOKEN=... npm start
 |---|---|---|
 | `LEXWARE_API_KEY` | — (**required**) | Your Lexware API key ([create one](https://app.lexware.de/addons/public-api)) |
 | `OAUTH_ISSUER` | — | OAuth authorization-server issuer URL. Setting it enables OAuth mode¹ |
-| `OAUTH_RESOURCE` / `SERVER_URL` | `http://127.0.0.1:$PORT` | This server's public URL. **Required in OAuth mode** (token audience / Resource Indicator), and used in *every* mode to build the upload links `create-upload-ticket` hands out (browser URL and `curl` command). Set it whenever the server is reachable under a real domain — without it those links point at the loopback fallback, which only works on the server itself |
+| `OAUTH_RESOURCE` / `SERVER_URL` | `http://127.0.0.1:$PORT` | This server's public URL. **Required in OAuth mode**, where it is the token audience / Resource Indicator: set it to the MCP endpoint, `https://…/mcp`, exactly as users enter it in Claude. Also used in *every* mode to build the upload links `create-upload-ticket` hands out (browser URL and `curl` command), from the same URL minus a trailing `/mcp`. Set it whenever the server is reachable under a real domain — without it those links point at the loopback fallback, which only works on the server itself |
 | `OAUTH_ALLOWED_EMAIL_DOMAINS` | — | Comma-separated allow-list of email domains (e.g. `example.com`) |
 | `OAUTH_VERIFY_AUDIENCE` | `true` | Verify the token `aud` matches `OAUTH_RESOURCE`. **Keep `true`.** Setting `false` accepts *any* valid token from the issuer — including one minted for a different app on the same issuer (a confused-deputy risk). Only disable for a dedicated, single-audience issuer that has no Resource Indicator |
 | `OAUTH_AUDIENCE` | — | Comma-separated **additional** accepted `aud` values, on top of `OAUTH_RESOURCE`. For IdPs that ignore the Resource Indicator: Microsoft Entra always puts the API's client ID (a GUID) in `aud`, never the Application ID URI, so without this every token is rejected. Prefer this over `OAUTH_VERIFY_AUDIENCE=false` — the check stays on, just against a value your IdP actually issues. Values are matched **exactly**: they are opaque identifiers, so no normalisation is applied (unlike `OAUTH_RESOURCE`, which also accepts its trailing-slash form) |
 | `OAUTH_SCOPES_SUPPORTED` | — | Scopes advertised as `scopes_supported`, telling clients what to request. Separate with commas **or** spaces (a scope value can never contain a space). Applies to **both** well-known documents, so they can't contradict each other. Unset: the protected-resource doc advertises nothing and the authorization-server doc keeps its `openid email profile` default — i.e. unchanged behaviour. Set it for IdPs that reject an authorization request with no `scope` parameter (Microsoft Entra: `AADSTS900144`) |
 | `OAUTH_JWKS_URL` / `OAUTH_USERINFO_URL` | derived from issuer | Override the JWKS / OIDC userinfo endpoints (defaults use the WorkOS-AuthKit layout) |
-| `OAUTH_AUTHORIZATION_ENDPOINT` / `OAUTH_TOKEN_ENDPOINT` / `OAUTH_REGISTRATION_ENDPOINT` | derived from issuer | Override the endpoints advertised in the authorization-server metadata. Defaults use the WorkOS layout (`{issuer}/oauth2/*`); set these for other IdPs (e.g. Auth0: `/authorize`, `/oauth/token`, Entra: `/oauth2/v2.0/authorize`). Set `OAUTH_REGISTRATION_ENDPOINT=none` if your issuer does **not** support Dynamic Client Registration — the field is optional in RFC 8414, and advertising an endpoint that rejects every request makes clients attempt DCR and fail rather than use a pre-registered client |
+| `OAUTH_AUTHORIZATION_ENDPOINT` / `OAUTH_TOKEN_ENDPOINT` / `OAUTH_REGISTRATION_ENDPOINT` | derived from issuer | Override the endpoints advertised in the authorization-server metadata. Defaults use the WorkOS layout (`{issuer}/oauth2/*`); set these for other IdPs (e.g. Auth0: `/authorize`, `/oauth/token`, Entra: `/oauth2/v2.0/authorize`). Set `OAUTH_REGISTRATION_ENDPOINT=none` if your issuer does **not** support Dynamic Client Registration (deprecated in the MCP spec since 2026-07-28 in favour of Client ID Metadata Documents) — the field is optional in RFC 8414, and advertising an endpoint that rejects every request makes clients attempt DCR and fail rather than use a pre-registered client |
 | `MCP_AUTH_TOKEN` | — (**required**¹) | Static bearer token clients send to reach `/mcp` (used when OAuth is off) |
 | `MCP_ALLOW_UNAUTHENTICATED` | `false` | Opt out of auth (trusted local use only — bind to localhost/private network) |
 | `LEXWARE_READ_ONLY` | `false` | Register only read tools (hard override) |

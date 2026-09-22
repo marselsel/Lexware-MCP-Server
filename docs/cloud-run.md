@@ -42,8 +42,12 @@ gcloud run deploy lexware-mcp \
   --allow-unauthenticated \
   --max-instances=1 \
   --set-secrets LEXWARE_API_KEY=lexware-api-key:latest \
-  --set-env-vars OAUTH_ISSUER=https://YOUR-TENANT.example,SERVER_URL=https://YOUR-PUBLIC-URL,OAUTH_RESOURCE=https://YOUR-PUBLIC-URL,OAUTH_ALLOWED_EMAIL_DOMAINS=example.com
+  --set-env-vars OAUTH_ISSUER=https://YOUR-TENANT.example,OAUTH_RESOURCE=https://YOUR-PUBLIC-URL/mcp,OAUTH_ALLOWED_EMAIL_DOMAINS=example.com
 ```
+
+`OAUTH_RESOURCE` is the MCP endpoint including `/mcp` — the URL users enter in Claude — and
+must also be registered as a Resource Indicator with your provider, or every token fails the
+audience check. See the README's "Connecting as a custom connector (OAuth)".
 
 **Static bearer token (Claude Code / Desktop only):** store a token in Secret Manager and map
 it instead of the OAuth env vars:
