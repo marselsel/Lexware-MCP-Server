@@ -14,10 +14,11 @@ anyone else's credentials. It runs as a remote HTTP server on any container host
 the [Skybridge](https://docs.skybridge.tech) framework.
 
 **Two authentication methods — choose one:**
-- **OAuth 2.1** — required to use this as a **web MCP server / custom connector** in the
-  Claude app, **claude.ai web**, or **ChatGPT** (those clients accept only OAuth).
-- **Static bearer token** — simpler, but works only with **Claude Code / Claude Desktop**
-  (which let you send a request header); the web custom-connector UI does not support it.
+- **OAuth 2.1** — the way to use this as a **web MCP server / custom connector** in the
+  Claude app, **claude.ai web**, or **ChatGPT**, with each user signing in.
+- **Static bearer token** — simpler. Works with **Claude Code / Claude Desktop** (which let
+  you send a request header). On claude.ai it works only through the organization-admin
+  "static headers" connector option, which is in beta for a limited set of organizations.
 
 Setup for both is in the [Client support & authentication](#client-support--authentication)
 section below.
@@ -124,8 +125,11 @@ The server supports two ways to protect `/mcp`, chosen by environment:
   sign-in. Optionally restrict access with `OAUTH_ALLOWED_EMAIL_DOMAINS` (enforced
   server-side via the token's email / the provider's userinfo endpoint).
 - **Static bearer token** (`MCP_AUTH_TOKEN`) — the simpler fallback. Works with **Claude
-  Code** and **Claude Desktop** (which let you set a request header), but **not** the custom
-  connector UI / claude.ai web / ChatGPT (those require OAuth).
+  Code** and **Claude Desktop** (which let you set a request header). claude.ai can send one
+  too, but only when an organization admin adds the connector with a **static header** — a
+  beta available to a limited set of organizations. Claude sends the value exactly as entered,
+  so enter `Bearer <token>`. Every user of that connector then shares one credential, so
+  prefer OAuth wherever users sign in individually.
 
 OAuth takes precedence when `OAUTH_ISSUER` is set; otherwise the static token is used. With
 neither set, the server refuses to start unless `MCP_ALLOW_UNAUTHENTICATED=true`.

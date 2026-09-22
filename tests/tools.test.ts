@@ -96,6 +96,7 @@ function registeredNames(config: Config): string[] {
 interface ToolDef {
   name: string;
   title?: string;
+  outputSchema?: unknown;
   annotations?: { title?: string; readOnlyHint?: boolean; destructiveHint?: boolean };
 }
 
@@ -127,6 +128,10 @@ describe("tool metadata", () => {
     expect(untitled).toEqual([]);
     const titles = defs.map((d) => d.title);
     expect(new Set(titles).size).toBe(titles.length);
+  });
+
+  it("declares no outputSchema while Claude's clients still fail on them (see shared.ts)", () => {
+    expect(defs.filter((d) => d.outputSchema !== undefined).map((d) => d.name)).toEqual([]);
   });
 
   it("mirrors the title into annotations.title, which Anthropic's directory checklist reads", () => {
