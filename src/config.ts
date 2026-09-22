@@ -92,6 +92,26 @@ export type AuthConfig =
   | { mode: "static"; token: string }
   | { mode: "none" };
 
+/**
+ * Whether create-finalized-* also asks the HUMAN before issuing, through MCP elicitation
+ * (`LEXWARE_FINALIZE_ELICITATION`):
+ *
+ * - `off` (default): only `confirm_finalize`, which the model sets itself.
+ * - `when-supported`: a confirmation form when the client declares form elicitation;
+ *   clients that do not (every 2025-11-25 client, claude.ai today) finalize as before.
+ * - `required`: refuse to finalize on a client that cannot show the form.
+ *
+ * Off by default because client support is uneven: claude.ai has none yet, and Claude
+ * Cowork declares the capability but has been reported to hang on the request
+ * (anthropics/claude-ai-mcp#153, #1046).
+ */
+export type FinalizeElicitation = "off" | "when-supported" | "required";
+
+const FINALIZE_ELICITATION_MODES: readonly FinalizeElicitation[] = ["off", "when-supported", "required"];
+
+/** The codec's floor: an HMAC-SHA256 key shorter than 32 bytes is refused. */
+const MIN_REQUEST_STATE_KEY_BYTES = 32;
+
 export interface Config {
   lexwareApiKey: string;
   /** Base URL without a trailing slash, e.g. `https://api.lexware.io`. */
@@ -120,6 +140,14 @@ export interface Config {
   port: number;
   debugLogging: boolean;
   capabilities: Capabilities;
+  finalizeElicitation: FinalizeElicitation;
+  /**
+   * HMAC key for the elicitation round-trip state (`LEXWARE_REQUEST_STATE_KEY`, at least
+   * 32 bytes). Unset means a random per-process key: enough for the single instance this
+   * server is deployed as, at the cost of an in-flight confirmation failing across a
+   * restart. Set it when more than one instance can answer the same client.
+   */
+  requestStateKey?: string;
   /** Non-fatal configuration notices to log at startup (e.g. a flag that was overridden). */
   warnings: string[];
 }
@@ -406,7 +434,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const enableUrlUpload = enableDrafts && urlUploadRequested;
   const uploadAllowedHosts = resolveUploadAllowedHosts(env);
 
+  const elicitationRaw = env.LEXWARE_FINALIZE_ELICITATION?.trim().toLowerCase() || "off";
+  if (!(FINALIZE_ELICITATION_MODES as readonly string[]).includes(elicitationRaw)) {
+    throw new ConfigError(
+      `LEXWARE_FINALIZE_ELICITATION must be one of ${FINALIZE_ELICITATION_MODES.join(", ")}: "${elicitationRaw}".`,
+    );
+  }
+  const finalizeElicitation = elicitationRaw as FinalizeElicitation;
+  const requestStateKey = env.LEXWARE_REQUEST_STATE_KEY?.trim() || undefined;
+  if (requestStateKey && Buffer.byteLength(requestStateKey, "utf8") < MIN_REQUEST_STATE_KEY_BYTES) {
+    throw new ConfigError(
+      `LEXWARE_REQUEST_STATE_KEY must be at least ${MIN_REQUEST_STATE_KEY_BYTES} bytes (e.g. \`openssl rand -hex 32\`).`,
+    );
+  }
+
   const warnings: string[] = [];
+  if (finalizeElicitation !== "off" && !enableFinalize) {
+    warnings.push(
+      `LEXWARE_FINALIZE_ELICITATION=${finalizeElicitation} has no effect: it confirms create-finalized-* ` +
+        "calls, and the finalize tier is disabled (LEXWARE_ENABLE_FINALIZE).",
+    );
+  }
   if (urlUploadRequested && !enableDrafts) {
     warnings.push(
       "LEXWARE_ENABLE_URL_UPLOAD=true has no effect: upload-file-from-url writes a file to Lexware and " +
@@ -461,6 +509,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port,
     debugLogging: parseBool(env.LEXWARE_DEBUG_LOGGING, false),
     capabilities: { read: true, drafts: enableDrafts, finalize: enableFinalize, urlUpload: enableUrlUpload },
+    finalizeElicitation,
+    requestStateKey,
     warnings,
   };
 }
@@ -469,7 +519,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 export function describeCapabilities(config: Config): string {
   const tiers = ["read"];
   if (config.capabilities.drafts) tiers.push("drafts");
-  if (config.capabilities.finalize) tiers.push("finalize");
+  if (config.capabilities.finalize) {
+    tiers.push(config.finalizeElicitation === "off" ? "finalize" : `finalize(elicit:${config.finalizeElicitation})`);
+  }
   if (config.capabilities.urlUpload) tiers.push("url-upload");
   const auth =
     config.auth.mode === "oauth"

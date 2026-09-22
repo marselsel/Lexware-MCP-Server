@@ -45,6 +45,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `structuredContent` yet" — never saw the document itself. Applied once, in `registerTools`, to every
   handler; error results and non-object `structuredContent` (which the SDK already serializes) are
   left alone.
+- Opt-in human confirmation before finalizing (`LEXWARE_FINALIZE_ELICITATION`, off by default).
+  `create-finalized-*` answers its first call with a confirmation form (MCP elicitation, protocol
+  2026-07-28) naming the recipient and date, and issues only when the client retries with a "yes"
+  for the same arguments. The round-trip state is HMAC-signed and bound to the signed-in user
+  (`LEXWARE_REQUEST_STATE_KEY`, random per process when unset), each approval issues one document,
+  and changed arguments are asked about again rather than issued. `when-supported` falls back to
+  today's behaviour on clients without form elicitation; `required` refuses there. Off by default
+  because client support is uneven: claude.ai has none yet (anthropics/claude-ai-mcp#153) and Claude
+  Cowork has been reported to hang on the request (#1046). Adds `@modelcontextprotocol/server` as a
+  direct dependency, at the version Skybridge already runs on.
 
 ### Fixed
 - A signed-in user whose email domain is not on `OAUTH_ALLOWED_EMAIL_DOMAINS` now gets a plain `403`

@@ -5,6 +5,7 @@ import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { buildServerInstructions } from "./instructions.js";
 import { LexwareClient } from "./lexware/client.js";
 import { advertisedScopes, buildOAuthMetadata, oauthGate, protectedResourceMetadataUrl } from "./oauth.js";
+import { createFinalizeConfirmation } from "./tools/finalize-confirmation.js";
 import { registerTools } from "./tools/index.js";
 import { INERT_APP_JSON } from "./server-body-parsing.js";
 import { registerUploadRoutes } from "./uploads/routes.js";
@@ -51,6 +52,11 @@ const client = new LexwareClient({
 // (which is also why the deployment runs --max-instances=1).
 export const uploadTickets = new TicketStore();
 
+// Human confirmation for create-finalized-* (LEXWARE_FINALIZE_ELICITATION); undefined when
+// off. Module scope for the same reason as the tickets: it remembers which approvals were
+// used, and its key must be the one that minted the state the client echoes back.
+const finalizeConfirmation = createFinalizeConfirmation(config.finalizeElicitation, config.requestStateKey);
+
 const app = new Skybridge({
   name: "lexware-office",
   title: "Lexware Office",
@@ -60,6 +66,9 @@ const app = new Skybridge({
   capabilities: {},
   // Sent when a client connects: how the tools fit together, scoped to the enabled tiers.
   instructions: buildServerInstructions(config.capabilities),
+  // Verifies the signed requestState a client echoes back with its confirmation, before the
+  // handler runs. Without the hook the SDK would hand the handler the raw, unverified string.
+  ...(finalizeConfirmation ? { requestState: { verify: finalizeConfirmation.verify } } : {}),
   // Skybridge's own app-level express.json() runs ahead of everything below, including
   // the auth gate. Kept inert; this file mounts what it needs, where it needs it.
   // See server-body-parsing.ts for why that ordering is load-bearing.
@@ -114,7 +123,7 @@ const app = new Skybridge({
   // and every /mcp call with a 500. That ordering is undocumented, so a test pins it:
   // tests/server-boot-registration.test.ts.
   handler: (server) => {
-    registerTools(server, client, config, uploadTickets);
+    registerTools(server, client, config, uploadTickets, finalizeConfirmation);
     return server;
   },
 });

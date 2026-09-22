@@ -19,6 +19,7 @@ import {
   registerEventSubscriptionWriteTools,
 } from "./event-subscriptions.js";
 import { registerFileReadTools, registerFileWriteTools } from "./files.js";
+import type { FinalizeConfirmation } from "./finalize-confirmation.js";
 import { registerProfileTools } from "./profile.js";
 import { withJsonText } from "./shared.js";
 import { registerReferenceReadTools } from "./reference.js";
@@ -74,6 +75,7 @@ export function registerTools(
   client: LexwareClient,
   config: Config,
   uploadTickets: TicketStore,
+  finalizeConfirmation?: FinalizeConfirmation,
 ): void {
   const server = withJsonTextResults(withAnnotationTitles(mcpServer));
   const { capabilities } = config;
@@ -106,7 +108,7 @@ export function registerTools(
 
   // Finalize / sensitive & irreversible tier (off by default).
   if (capabilities.finalize) {
-    registerDocumentFinalizeTools(server, client);
+    registerDocumentFinalizeTools(server, client, finalizeConfirmation);
     registerArticleDeleteTools(server, client);
     // Event-subscription create + delete are gated here (not drafts): a webhook streams
     // financial events to an arbitrary external URL (exfiltration-capable) and delete can
