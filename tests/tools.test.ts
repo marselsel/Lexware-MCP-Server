@@ -93,9 +93,65 @@ function registeredNames(config: Config): string[] {
   return names.sort();
 }
 
+interface ToolDef {
+  name: string;
+  title?: string;
+  annotations?: { title?: string; readOnlyHint?: boolean; destructiveHint?: boolean };
+}
+
+/** Capture the full config of every registered tool for a given config. */
+function registeredDefs(config: Config): ToolDef[] {
+  const defs: ToolDef[] = [];
+  const fakeServer = {
+    registerTool(cfg: ToolDef) {
+      defs.push(cfg);
+      return fakeServer;
+    },
+  } as unknown as McpServer;
+  registerTools(fakeServer, {} as unknown as LexwareClient, config, new TicketStore());
+  return defs;
+}
+
 const TOKEN = "a".repeat(40);
 const env = (extra: Record<string, string> = {}) =>
   ({ LEXWARE_API_KEY: "k", MCP_AUTH_TOKEN: TOKEN, ...extra }) as NodeJS.ProcessEnv;
+
+describe("tool metadata", () => {
+  // Every tier on, so no tool escapes the checks.
+  const defs = registeredDefs(
+    loadConfig(env({ LEXWARE_ENABLE_FINALIZE: "true", LEXWARE_ENABLE_URL_UPLOAD: "true" })),
+  );
+
+  it("gives every tool a distinct human-readable title", () => {
+    const untitled = defs.filter((d) => !d.title?.trim()).map((d) => d.name);
+    expect(untitled).toEqual([]);
+    const titles = defs.map((d) => d.title);
+    expect(new Set(titles).size).toBe(titles.length);
+  });
+
+  it("mirrors the title into annotations.title, which Anthropic's directory checklist reads", () => {
+    for (const d of defs) expect(d.annotations?.title, d.name).toBe(d.title);
+  });
+
+  it("marks exactly the overwriting, deleting and irreversible tools destructive", () => {
+    // Clients prompt a human before a destructive tool runs. That confirmation is the
+    // real gate on finalizing: confirm_finalize is a value the model sets itself.
+    const destructive = defs.filter((d) => d.annotations?.destructiveHint).map((d) => d.name);
+    expect(destructive.sort()).toEqual(
+      defs
+        .map((d) => d.name)
+        .filter((n) => /^(update|delete|create-finalized)-/.test(n))
+        .sort(),
+    );
+  });
+
+  it("marks every read tool read-only, and no write tool", () => {
+    for (const d of defs) {
+      const isRead = READ_TOOLS.includes(d.name) || d.name === "get-upload-result";
+      expect(d.annotations?.readOnlyHint, d.name).toBe(isRead);
+    }
+  });
+});
 
 describe("registerTools (tiered registration)", () => {
   it("read-only registers exactly the read tools", () => {

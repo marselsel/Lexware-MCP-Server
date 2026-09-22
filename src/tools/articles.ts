@@ -18,6 +18,7 @@ export function registerArticleReadTools(server: McpServer, client: LexwareClien
   server.registerTool(
     {
       name: "list-articles",
+      title: "List articles",
       description:
         "List articles (products/services). Optional filters; results are paged (use page/size to fetch more).",
       inputSchema: {
@@ -44,6 +45,7 @@ export function registerArticleReadTools(server: McpServer, client: LexwareClien
   server.registerTool(
     {
       name: "get-article",
+      title: "Get article",
       description: "Get a single article by id.",
       inputSchema: { id: z.string() },
       annotations: RO,
@@ -63,6 +65,7 @@ export function registerArticleWriteTools(server: McpServer, client: LexwareClie
   server.registerTool(
     {
       name: "create-article",
+      title: "Create article",
       description: "Create a new article (product or service).",
       inputSchema: { ...articleInputShape, additionalFields: additionalFieldsParam },
       annotations: WRITE,
@@ -76,6 +79,7 @@ export function registerArticleWriteTools(server: McpServer, client: LexwareClie
   server.registerTool(
     {
       name: "update-article",
+      title: "Update article",
       description:
         "Update an existing article. Read-modify-write: the current article is fetched and your fields are " +
         "merged over it, so omitted fields aren't wiped and you can change just the price. Pass `version` for " +
@@ -85,7 +89,7 @@ export function registerArticleWriteTools(server: McpServer, client: LexwareClie
         version: versionParam("get-article"),
         ...articleUpdateShape,
       },
-      annotations: WRITE,
+      annotations: DESTRUCTIVE,
     },
     async ({ id, version, ...fields }) => {
       // Read-modify-write: lexoffice PUT replaces the whole article, so merge over the current one.
@@ -115,6 +119,7 @@ export function registerArticleDeleteTools(server: McpServer, client: LexwareCli
   server.registerTool(
     {
       name: "delete-article",
+      title: "Delete article",
       description:
         "Delete an article (product/service) by id. This is irreversible. Idempotent: deleting an id that is " +
         "already absent reports success (the end state is the same).",

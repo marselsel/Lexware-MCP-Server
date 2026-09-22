@@ -2,7 +2,7 @@ import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
 import { additionalFieldsParam, mergeBody, versionParam, voucherInputShape, voucherUpdateShape } from "./schemas.js";
-import { WRITE, decodeBase64Strict, deepMergePatch, text } from "./shared.js";
+import { DESTRUCTIVE, WRITE, decodeBase64Strict, deepMergePatch, text } from "./shared.js";
 
 /** Voucher statuses lexoffice DERIVES from payments — re-sending them on PUT is rejected (invalid_value). */
 const DERIVED_VOUCHER_STATUSES = new Set(["paid", "paidoff", "voided", "transferred", "sepadebit"]);
@@ -16,6 +16,7 @@ export function registerVoucherWriteTools(server: McpServer, client: LexwareClie
   server.registerTool(
     {
       name: "create-voucher",
+      title: "Create voucher",
       description:
         "Create a bookkeeping voucher (a manually-booked sales/purchase transaction). Returns the new id. " +
         "To attach a receipt afterwards, use upload-voucher-file.",
@@ -38,6 +39,7 @@ export function registerVoucherWriteTools(server: McpServer, client: LexwareClie
   server.registerTool(
     {
       name: "update-voucher",
+      title: "Update voucher",
       description:
         "Update a bookkeeping voucher. Read-modify-write: the current voucher is fetched and your fields are " +
         "merged over it, so attached files and untouched fields (voucherNumber, contact, …) are preserved. Send " +
@@ -54,7 +56,7 @@ export function registerVoucherWriteTools(server: McpServer, client: LexwareClie
         version: versionParam("get-voucher"),
         ...voucherUpdateShape,
       },
-      annotations: WRITE,
+      annotations: DESTRUCTIVE,
     },
     async ({ id, version, ...fields }) => {
       // Read-modify-write: lexoffice PUT replaces the whole resource, so load the
@@ -97,6 +99,7 @@ export function registerVoucherWriteTools(server: McpServer, client: LexwareClie
   server.registerTool(
     {
       name: "upload-voucher-file",
+      title: "Attach file to voucher",
       description:
         "Attach a file (receipt/scan) to a bookkeeping voucher via POST /v1/vouchers/{id}/files. Provide the " +
         "file as base64 (inline; ~12 MB body cap, so keep the source under ~8 MB). To RE-LINK an already-uploaded " +

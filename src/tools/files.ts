@@ -8,6 +8,7 @@ export function registerFileReadTools(server: McpServer, client: LexwareClient):
   server.registerTool(
     {
       name: "download-file",
+      title: "Download file",
       description:
         "Download a file (a rendered document PDF or an uploaded receipt) by its file id. Returns the " +
         "bytes inline as an embedded resource. File ids come from render-*-pdf, upload-file, or a voucher's files.",
@@ -41,6 +42,7 @@ export function registerFileWriteTools(server: McpServer, client: LexwareClient)
   server.registerTool(
     {
       name: "upload-file",
+      title: "Upload file",
       description:
         "Upload a file to Lexware's file store — the first step of attaching a receipt to a bookkeeping " +
         "voucher. Provide the file as base64; returns the new file id to reference elsewhere. The base64 travels " +

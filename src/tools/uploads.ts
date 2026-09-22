@@ -95,6 +95,7 @@ export function registerUploadTools(
   server.registerTool(
     {
       name: "create-upload-ticket",
+      title: "Create upload link",
       description:
         "Issue a short-lived, single-use upload ticket so a file can reach Lexware WITHOUT its bytes passing " +
         "through the model context (unlike upload-file, which needs base64). Returns a browser URL for " +
@@ -139,6 +140,7 @@ export function registerUploadTools(
   server.registerTool(
     {
       name: "get-upload-result",
+      title: "Get upload result",
       description:
         "Read the Lexware file id produced by an upload ticket. Use after a browser drag-and-drop; the curl " +
         "path already prints the id itself. Returns pending=true while nothing has been uploaded yet.",

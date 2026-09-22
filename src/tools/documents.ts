@@ -21,7 +21,7 @@ import {
   quotationInputShape,
   sizeParam,
 } from "./schemas.js";
-import { LOCAL_RO, RO, WRITE, binaryResult, pagedResult, text } from "./shared.js";
+import { DESTRUCTIVE, LOCAL_RO, RO, WRITE, binaryResult, pagedResult, text } from "./shared.js";
 
 /**
  * A tool's `inputSchema`: the raw field shape skybridge's `registerTool` takes.
@@ -346,6 +346,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "get-voucherlist",
+      title: "List vouchers",
       description:
         "Search the voucher list — the primary index of all financial documents (invoices, credit notes, quotations, etc.). voucherType and voucherStatus both default to 'any', which matches all. Results are paged. Filter by createdDate*/updatedDate* to see only what is new or changed since a given day, and by voucherNumber to look a single document up by its number.",
       inputSchema: {
@@ -433,6 +434,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "summarize-vouchers",
+      title: "Summarize voucher totals",
       description:
         "Aggregate the voucherlist over a date range WITHOUT returning every row: server-side paginates all " +
         "matches and returns counts plus summed gross/open amounts, grouped by a chosen dimension. Use this " +
@@ -586,6 +588,7 @@ export function registerDocumentReadTools(
     server.registerTool(
       {
         name: `get-${doc.key}`,
+        title: `Get ${doc.label}`,
         description: `Get a single ${doc.label} by id (full document including line items).`,
         inputSchema: { id: z.string() },
         annotations: RO,
@@ -605,6 +608,7 @@ export function registerDocumentReadTools(
         // renaming a registered tool breaks every saved prompt and client config that
         // refers to it, which is a poor trade for a suffix. The description carries it.
         name: `render-${doc.key}-pdf`,
+        title: `Download ${doc.label} file`,
         description: doc.eInvoice
           ? `Download the finalized file of a ${doc.label} (GET /v1/${doc.path}/{id}/file) and return it ` +
             `inline — the PDF by default, or the e-invoice XML with format="xml" (XRechnung only). ` +
@@ -651,6 +655,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "get-voucher",
+      title: "Get voucher",
       description:
         "Get a single bookkeeping voucher by id — the full object, including contactId for referenced contacts (collective vouchers have only contactName) and files[] (ids of attached receipts). Note: voucherlist rows of type 'invoice' resolve via get-invoice, 'quotation' via get-quotation, etc. — only manually-booked vouchers resolve here. There is no festgeschrieben/lock flag in the payload; a locked (filed-VAT-period) voucher only surfaces as an error on a write attempt.",
       inputSchema: { id: z.string() },
@@ -665,6 +670,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "get-vouchers",
+      title: "Get several vouchers",
       description:
         "Fetch multiple bookkeeping vouchers by id in one call (each returned in full, like get-voucher) — " +
         "reduces round-trips when you need many. Fetched sequentially through the ~2 requests/second rate limit, " +
@@ -698,6 +704,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "get-document",
+      title: "Get document by voucher type",
       description:
         "Fetch a financial document by id, auto-dispatching to the correct endpoint from its voucherlist " +
         "`voucherType` — so you don't choose get-invoice vs get-voucher vs get-quotation, etc. Pass the id and " +
@@ -727,6 +734,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "get-document-file",
+      title: "Download document file",
       description:
         "Download the finalized file of a document by resource + id (GET /v1/{resourceType}/{id}/file), " +
         "returned inline — the PDF by default, or the e-invoice XML with format=\"xml\" (XRechnung only). " +
@@ -760,6 +768,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "get-voucher-file",
+      title: "Download voucher receipt",
       description:
         "Download the receipt attached to a bookkeeping voucher in one call: resolves the voucher's file id " +
         "and returns the file inline (instead of get-voucher then download-file). Use fileIndex to pick a " +
@@ -797,6 +806,7 @@ export function registerDocumentReadTools(
   server.registerTool(
     {
       name: "get-document-link",
+      title: "Build Lexware web-app link",
       description:
         "Build a deeplink that opens a document directly in the Lexware web app (works when logged into Lexware). Use this to let the user view/print a document; do not use it to fetch raw PDF bytes.",
       inputSchema: {
@@ -834,6 +844,7 @@ export function registerDocumentDraftTools(server: McpServer, client: LexwareCli
     server.registerTool(
       {
         name: `create-draft-${doc.key}`,
+        title: `Create draft ${doc.label}`,
         description:
           `Create a DRAFT ${doc.label} (editable, not legally issued). Provide the full document body for a ` +
           `standalone document; with precedingSalesVoucherId the body (line items/contact) is carried over ` +
@@ -896,6 +907,7 @@ export function registerDocumentFinalizeTools(server: McpServer, client: Lexware
     server.registerTool(
       {
         name: `create-finalized-${doc.key}`,
+        title: `Issue ${doc.label} (finalize, irreversible)`,
         description: `Create and FINALIZE a ${doc.label} in one step. This issues a LEGALLY BINDING, IRREVERSIBLE document (it cannot be edited or deleted afterwards). Requires confirm_finalize=true. Prefer create-draft-${doc.key} unless the user explicitly wants to issue it now.`,
         inputSchema: {
           ...optionalShape(doc.schema),
@@ -908,7 +920,7 @@ export function registerDocumentFinalizeTools(server: McpServer, client: Lexware
           ),
           additionalFields: additionalFieldsParam,
         },
-        annotations: WRITE,
+        annotations: DESTRUCTIVE,
       },
       async ({ confirm_finalize: _confirm, precedingSalesVoucherId, additionalFields, ...input }) => {
         const query: Record<string, string | boolean> = { finalize: true };
