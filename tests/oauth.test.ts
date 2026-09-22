@@ -10,7 +10,10 @@ import {
   createAccessTokenVerifier,
   isEmailDomainAllowed,
   isEmailVerified,
+  oauthGate,
+  requireAllowedEmailDomain,
   type OAuthSettings,
+  type VerifierDeps,
 } from "../src/oauth.js";
 
 const ISSUER = "https://auth.example.com";
@@ -81,6 +84,52 @@ describe("isEmailVerified", () => {
   });
 });
 
+/** What a client sees from `/mcp` behind the OAuth gate. */
+interface GateResponse {
+  status: number;
+  challenge: string | null;
+  body: Record<string, unknown>;
+}
+
+/**
+ * Serve `oauthGate` in front of a 200 handler and call it over real HTTP, so the status
+ * AND the WWW-Authenticate header are asserted as a client receives them — those two
+ * together are what decide whether Claude re-runs sign-in or gives up.
+ */
+async function throughGate(
+  oauth: OAuthSettings,
+  deps: VerifierDeps,
+  tokens: (string | undefined)[],
+): Promise<GateResponse[]> {
+  const app = express();
+  app.use("/mcp", ...oauthGate(oauth, `${RESOURCE}/.well-known/oauth-protected-resource`, deps));
+  app.use("/mcp", (_req, res) => {
+    res.json({ ok: true });
+  });
+  const server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address() as AddressInfo;
+    const out: GateResponse[] = [];
+    for (const token of tokens) {
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      out.push({
+        status: res.status,
+        challenge: res.headers.get("www-authenticate"),
+        body: (await res.json()) as Record<string, unknown>,
+      });
+    }
+    return out;
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+const refusedFinal = { status: 403, challenge: null, body: { error: "access_denied" } };
+
 describe("the rejection is an OAuthError, which is what decides the HTTP status", () => {
   // Every other rejection test here asserts only the MESSAGE, and the message is the one
   // thing that does NOT matter to the wire. skybridge 2's requireBearerAuth (from
@@ -101,14 +150,96 @@ describe("the rejection is an OAuthError, which is what decides the HTTP status"
     expect((err as OAuthError).code).toBe(OAuthErrorCode.InvalidToken);
   });
 
-  it("throws insufficient_scope for a disallowed domain, so it is a 403 and not a 401 loop", async () => {
-    // Deliberately 403: the token is valid, the user is simply not authorized. A 401
-    // would make clients discard a good token and re-authenticate in a loop.
-    const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["allowed.example"] }), { jwks });
-    const token = await sign({ sub: "u", email: "someone@nope.example", email_verified: true });
-    const err = await verify(token).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(OAuthError);
-    expect((err as OAuthError).code).toBe(OAuthErrorCode.InsufficientScope);
+});
+
+describe("oauthGate: authentication, then the email-domain decision", () => {
+  const domain = settings({ allowedEmailDomains: ["example.com"] });
+
+  it("answers a missing or invalid token with 401 and a challenge, so the client signs in", async () => {
+    const bad = await sign({ sub: "u" }, { iss: "https://evil.example.com" });
+    for (const res of await throughGate(domain, { jwks }, [undefined, bad])) {
+      expect(res.status).toBe(401);
+      expect(res.challenge).toMatch(/^Bearer error="invalid_token".*resource_metadata=/);
+    }
+  });
+
+  it("refuses a disallowed domain with a plain 403 and NO challenge, so the refusal is final", async () => {
+    // Claude re-runs sign-in for a 401, and for a 403 carrying error="insufficient_scope"
+    // (scope step-up). Neither can help a user whose email domain is simply not allowed,
+    // so both would loop. Only a 403 without the challenge is surfaced as a terminal error.
+    const token = await sign({ sub: "u", email: "attacker@evil.com", email_verified: true });
+    const [res] = await throughGate(domain, { jwks }, [token]);
+    expect(res).toMatchObject(refusedFinal);
+    expect(res.body.error_description).toMatch(/domain is not permitted/);
+  });
+
+  it("lets an allowed domain through", async () => {
+    const token = await sign({ sub: "u", email: "user@example.com", email_verified: true });
+    const [res] = await throughGate(domain, { jwks }, [token]);
+    expect(res).toMatchObject({ status: 200, body: { ok: true } });
+  });
+
+  it("lets everyone the issuer authenticates through when no allow-list is set", async () => {
+    const token = await sign({ sub: "u" });
+    const [res] = await throughGate(settings(), { jwks }, [token]);
+    expect(res.status).toBe(200);
+  });
+
+  it("refuses an unverified email claim even when its domain is allowed", async () => {
+    const token = await sign({ sub: "u", email: "user@example.com", email_verified: false });
+    // userinfo can't rescue it either:
+    const fetchFn = (async () => new Response("no", { status: 401 })) as unknown as typeof fetch;
+    const [res] = await throughGate(domain, { jwks, fetchFn }, [token]);
+    expect(res).toMatchObject(refusedFinal);
+  });
+
+  it("refuses an unverified userinfo email", async () => {
+    const fetchFn = (async () =>
+      new Response(JSON.stringify({ email: "user@example.com", email_verified: false }), {
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    const [res] = await throughGate(domain, { jwks, fetchFn }, [await sign({ sub: "u" })]);
+    expect(res).toMatchObject(refusedFinal);
+  });
+
+  it("fails closed when the email cannot be established", async () => {
+    const fetchFn = (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch;
+    const [res] = await throughGate(domain, { jwks, fetchFn }, [await sign({ sub: "u" })]);
+    expect(res).toMatchObject(refusedFinal);
+  });
+
+  it("does not cache userinfo misses — a valid user isn't locked out after a transient outage", async () => {
+    let call = 0;
+    const fetchFn = (async () => {
+      call += 1;
+      return call === 1
+        ? new Response("down", { status: 503 })
+        : new Response(JSON.stringify({ email: "user@example.com", email_verified: true }), {
+            headers: { "content-type": "application/json" },
+          });
+    }) as unknown as typeof fetch;
+    const token = await sign({ sub: "u" });
+    const [down, recovered] = await throughGate(domain, { jwks, fetchFn }, [token, token]);
+    expect(down.status).toBe(403); // userinfo down → refused
+    expect(recovered.status).toBe(200); // recovered → allowed
+  });
+
+  it("refuses when mounted without the verifier ahead of it, instead of letting everyone in", () => {
+    // Fails closed on a wiring mistake: no req.auth means no verified email.
+    let status = 0;
+    const res = {
+      status(code: number) {
+        status = code;
+        return res;
+      },
+      json: () => res,
+    };
+    let passed = false;
+    requireAllowedEmailDomain(["example.com"])({} as never, res as never, () => {
+      passed = true;
+    });
+    expect(passed).toBe(false);
+    expect(status).toBe(403);
   });
 });
 
@@ -182,11 +313,6 @@ describe("createAccessTokenVerifier", () => {
     await expect(verify(token)).resolves.toMatchObject({ extra: { email: "user@example.com" } });
   });
 
-  it("rejects an email-claim domain that is not permitted", async () => {
-    const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), { jwks });
-    const token = await sign({ sub: "u", email: "attacker@evil.com", email_verified: true });
-    await expect(verify(token)).rejects.toThrow(/domain is not permitted/);
-  });
 
   it("falls back to userinfo for the email when not a claim", async () => {
     const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), {
@@ -194,55 +320,13 @@ describe("createAccessTokenVerifier", () => {
       fetchFn: okFetch("user@example.com"),
     });
     const token = await sign({ sub: "u" });
-    await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } });
+    // The gate decides on extra.email, so the userinfo address must land there.
+    await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u", email: "user@example.com" } });
   });
 
-  it("rejects an unverified email claim even when its domain is allowed", async () => {
-    const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), {
-      jwks,
-      // userinfo can't rescue it either:
-      fetchFn: (async () => new Response("no", { status: 401 })) as unknown as typeof fetch,
-    });
-    const token = await sign({ sub: "u", email: "user@example.com", email_verified: false });
-    await expect(verify(token)).rejects.toThrow(/domain is not permitted/);
-  });
 
-  it("rejects an unverified userinfo email", async () => {
-    const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), {
-      jwks,
-      fetchFn: (async () =>
-        new Response(JSON.stringify({ email: "user@example.com", email_verified: false }), {
-          headers: { "content-type": "application/json" },
-        })) as unknown as typeof fetch,
-    });
-    const token = await sign({ sub: "u" });
-    await expect(verify(token)).rejects.toThrow(/domain is not permitted/);
-  });
 
-  it("does not cache userinfo misses — a valid user isn't locked out after a transient outage", async () => {
-    let call = 0;
-    const fetchFn = (async () => {
-      call += 1;
-      return call === 1
-        ? new Response("down", { status: 503 })
-        : new Response(JSON.stringify({ email: "user@example.com", email_verified: true }), {
-            headers: { "content-type": "application/json" },
-          });
-    }) as unknown as typeof fetch;
-    const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), { jwks, fetchFn });
-    const token = await sign({ sub: "u" });
-    await expect(verify(token)).rejects.toThrow(); // userinfo down → rejected
-    await expect(verify(token)).resolves.toMatchObject({ extra: { sub: "u" } }); // recovered → allowed
-  });
 
-  it("fails closed when the email cannot be established", async () => {
-    const verify = createAccessTokenVerifier(settings({ allowedEmailDomains: ["example.com"] }), {
-      jwks,
-      fetchFn: (async () => new Response("nope", { status: 401 })) as unknown as typeof fetch,
-    });
-    const token = await sign({ sub: "u" });
-    await expect(verify(token)).rejects.toThrow(/domain is not permitted/);
-  });
 });
 
 describe("advertisedScopes", () => {

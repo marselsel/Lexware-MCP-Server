@@ -1,8 +1,10 @@
+import type { Request, RequestHandler } from "express";
 import {
   type AuthInfo,
   type AuthMetadataOptions,
   OAuthError,
   OAuthErrorCode,
+  requireBearerAuth,
 } from "skybridge/server";
 import { createHash } from "node:crypto";
 import * as jose from "jose";
@@ -153,10 +155,12 @@ export interface VerifierDeps {
 }
 
 /**
- * Build a `verifyAccessToken` for `requireBearerAuth`. It verifies the JWT
- * signature/issuer/audience via JWKS, then — if `allowedEmailDomains` is set —
- * enforces the user's email domain (reading the `email` claim, falling back to
- * the userinfo endpoint), failing closed if the email can't be established.
+ * Build a `verifyAccessToken` for `requireBearerAuth`: authentication only. It verifies
+ * the JWT signature/issuer/audience via JWKS and, when `allowedEmailDomains` is set,
+ * establishes the user's verified email (the `email` claim, falling back to the userinfo
+ * endpoint) into `extra.email`. It does NOT enforce the allow-list — that is
+ * authorization, and {@link requireAllowedEmailDomain} answers it with its own status.
+ * Mount both through {@link oauthGate}, never the verifier alone.
  */
 export function createAccessTokenVerifier(oauth: OAuthSettings, deps: VerifierDeps = {}) {
   const jwks = deps.jwks ?? jose.createRemoteJWKSet(new URL(oauth.jwksUrl));
@@ -220,15 +224,6 @@ export function createAccessTokenVerifier(oauth: OAuthSettings, deps: VerifierDe
           }
         }
       }
-      if (!isEmailDomainAllowed(email, oauth.allowedEmailDomains)) {
-        // 403, not 401: the token is valid, the user is simply not authorized. A 401
-        // (invalid_token) would make clients discard the token and re-authenticate in a
-        // loop; insufficient_scope maps to 403 and terminates cleanly.
-        throw new OAuthError(
-          OAuthErrorCode.InsufficientScope,
-          "Your email domain is not permitted to use this server",
-        );
-      }
     }
 
     return {
@@ -239,4 +234,54 @@ export function createAccessTokenVerifier(oauth: OAuthSettings, deps: VerifierDe
       extra: { sub, ...(email ? { email } : {}) },
     };
   };
+}
+
+const DOMAIN_REFUSED = "Your email domain is not permitted to use this server";
+
+/**
+ * Authorization after {@link createAccessTokenVerifier} has authenticated the caller:
+ * refuse a user whose verified email is not in `allowed`.
+ *
+ * A plain 403 with NO `WWW-Authenticate` challenge, deliberately. The token is valid, so
+ * a 401 would make the client throw it away and sign in again in a loop. A 403 carrying
+ * `error="insufficient_scope"` is no better: that is the MCP step-up signal, and Claude
+ * answers it by sending the user back through sign-in for more scope — which cannot help
+ * here, since no scope changes the user's email domain. Only a 403 without the challenge
+ * tells the client the refusal is final.
+ *
+ * Fails closed: no `req.auth` (mounted without the verifier ahead of it) or no verified
+ * email both count as refused.
+ */
+export function requireAllowedEmailDomain(allowed: string[]): RequestHandler {
+  return (req, res, next) => {
+    if (allowed.length === 0) {
+      next();
+      return;
+    }
+    const email = (req as Request & { auth?: AuthInfo }).auth?.extra?.email;
+    if (isEmailDomainAllowed(typeof email === "string" ? email : undefined, allowed)) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "access_denied", error_description: DOMAIN_REFUSED });
+  };
+}
+
+/**
+ * The `/mcp` gate in OAuth mode: authenticate the bearer token (401 + challenge when it is
+ * missing or invalid), then authorize the user's email domain (plain 403). One factory so
+ * the two cannot be mounted apart — the verifier alone lets every issuer user through.
+ */
+export function oauthGate(
+  oauth: OAuthSettings,
+  resourceMetadataUrl: string,
+  deps: VerifierDeps = {},
+): RequestHandler[] {
+  return [
+    requireBearerAuth({
+      verifier: { verifyAccessToken: createAccessTokenVerifier(oauth, deps) },
+      resourceMetadataUrl,
+    }),
+    requireAllowedEmailDomain(oauth.allowedEmailDomains),
+  ];
 }
