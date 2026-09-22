@@ -12,3 +12,5 @@ dist/
 *.tsbuildinfo
 .skybridge/
 .agents/
+# npm auth tokens:
+.npmrc

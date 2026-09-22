@@ -9,7 +9,7 @@
     "dev": "skybridge dev",
     "dev:tunnel": "skybridge dev --tunnel",
     "build": "tsc -b --force",
-    "start": "node dist/server.js",
+    "start": "NODE_ENV=production node dist/server.js",
     "typecheck": "tsc -b --force",
     "test": "vitest run",
     "test:watch": "vitest"

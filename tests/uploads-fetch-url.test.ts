@@ -56,6 +56,22 @@ describe("isBlockedAddress", () => {
       expect(isBlockedAddress(ip), ip).toBe(true);
     }
   });
+
+  it("blocks IPv6 multicast, local-use NAT64, Teredo and discard-only, without catching neighbouring public space", () => {
+    for (const ip of [
+      "ff02::1", "ff0e::101", // ff00::/8 (multicast)
+      "64:ff9b:1::a9fe:a9fe", // 64:ff9b:1::/48 (local-use NAT64, RFC 8215)
+      "2001:0:4136:e378:8000:63bf:3fff:fdd2", // 2001::/32 (Teredo)
+      "100::1", // 100::/64 (discard-only)
+    ]) {
+      expect(isBlockedAddress(ip), ip).toBe(true);
+    }
+    // Same leading bytes, outside the blocked prefixes: 2001:4860 is Google Public DNS,
+    // 100:0:0:1:: is past the /64.
+    for (const ip of ["2001:4860:4860::8888", "100:0:0:1::1"]) {
+      expect(isBlockedAddress(ip), ip).toBe(false);
+    }
+  });
 });
 
 describe("isAllowedHost", () => {
