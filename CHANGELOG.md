@@ -32,6 +32,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clients show instead of the tool name. It is set both as the top-level `title` and as
   `annotations.title`: the spec reads the first, Anthropic's directory checklist asks for the second.
   A test pins titles, and which tools are read-only and destructive, for every tier.
+- Server `instructions` (in the initialize result, or `server/discover` on the 2026-07-28 protocol): how the tools fit together, which no single tool
+  description can say — the ~2 req/s limit and the tools that page server-side, finding a document
+  by number, voucherlist row → document/PDF, the two date formats, why drafts cannot be fixed after
+  creation, the upload-ticket flow. Built from the enabled tiers, and a test checks that every tool
+  it names is actually registered for that tier. `serverInfo` also gains a `title`, `description`
+  and `websiteUrl`.
 
 ### Changed
 - Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.
