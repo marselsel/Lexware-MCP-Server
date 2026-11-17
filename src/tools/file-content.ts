@@ -174,9 +174,15 @@ function baseType(contentType: string): string {
   return contentType.split(";")[0]!.trim().toLowerCase();
 }
 
+/** Declared types that say nothing about the content, so the bytes decide. */
+const VAGUE_TYPES = new Set(["", "application/octet-stream", "binary/octet-stream", "application/x-download"]);
+
 function isPdf(data: Buffer, type: string): boolean {
-  // Sniff as well: Lexware serves some files as application/octet-stream.
-  return type === "application/pdf" || data.subarray(0, 1024).includes("%PDF-");
+  if (type === "application/pdf" || data.subarray(0, 5).toString("latin1") === "%PDF-") return true;
+  // Lexware serves some files as application/octet-stream, and a PDF may have a little junk
+  // before its header. Only then search the first 1 KB: a text, XML or JSON file that merely
+  // mentions "%PDF-" is not a PDF.
+  return VAGUE_TYPES.has(type) && data.subarray(0, 1024).includes("%PDF-");
 }
 
 function isTextual(type: string): boolean {
@@ -300,8 +306,14 @@ export async function readableContent(
   };
   try {
     if (isPdf(data, type)) return await readPdf(data, budget);
-    const imageType = IMAGE_TYPES.has(type) ? type : sniffImageType(data);
+    // The bytes, not the declared type, say what an image is: a JPEG served as image/png must
+    // go out as image/jpeg, or the model's API rejects the whole tool result.
+    const imageType = sniffImageType(data);
     if (imageType) return await readImage(data, imageType, budget);
+    if (IMAGE_TYPES.has(type)) {
+      const note = `The file is declared as ${type}, but its content is not a PNG, JPEG, GIF or WebP image. ${FULL_FILE}`;
+      return { blocks: [textBlock(`[${note}]`)], summary: { kind: "none", note } };
+    }
     if (isTextual(type)) return readText(data);
     return { blocks: [], summary: { kind: "none", note: `No readable form for ${type || "this file type"}.` } };
   } catch (err) {
@@ -382,15 +394,18 @@ async function readImage(data: Buffer, mimeType: string, budget: Budget): Promis
   if (data.length <= READABLE_LIMITS.maxImageBytes && size && fitsBudget(size.width, size.height)) {
     return { blocks: [imageBlock(data, mimeType)], summary: { kind: "image" } };
   }
-  if (size && size.width * size.height > settings.maxDecodePixels) {
-    const note =
-      `The image is ${size.width}×${size.height} px, more than this server decodes ` +
-      `(${settings.maxDecodePixels / 1_000_000} MP). ${FULL_FILE}`;
+  if (!size || size.width * size.height > settings.maxDecodePixels) {
+    // An unreadable header could hide any size: it is not handed to the decoder either.
+    const note = size
+      ? `The image is ${size.width}×${size.height} px, more than this server decodes ` +
+        `(${settings.maxDecodePixels / 1_000_000} MP). ${FULL_FILE}`
+      : `The image's size cannot be read from its header, so it is not decoded. ${FULL_FILE}`;
     return { blocks: [textBlock(`[${note}]`)], summary: { kind: "none", note } };
   }
   const canvas = await loadCanvas();
   if (!canvas) {
-    if (data.length <= READABLE_LIMITS.maxImageBytes) {
+    // Unscaled, but only within what the model's API accepts at all (8000 px a side).
+    if (data.length <= READABLE_LIMITS.maxImageBytes && Math.max(size.width, size.height) <= 8000) {
       const note = `Returned at its original size: it could not be downscaled. ${NO_CANVAS_NOTE}`;
       return { blocks: [imageBlock(data, mimeType), textBlock(`[${note}]`)], summary: { kind: "image", note } };
     }
@@ -429,7 +444,7 @@ async function readImage(data: Buffer, mimeType: string, budget: Budget): Promis
   };
   // A decode cannot be interrupted: on a timeout the call answers, and a large image keeps its
   // slot until the decode has finished (at most the grace period), so it stays counted.
-  const heavy = !size || size.width * size.height >= READABLE_LIMITS.heavyImagePixels;
+  const heavy = size.width * size.height >= READABLE_LIMITS.heavyImagePixels;
   try {
     return await runWithin(downscale, { ...budget, slots: heavy ? renderSlots : undefined });
   } catch (err) {

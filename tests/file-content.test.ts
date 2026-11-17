@@ -303,6 +303,25 @@ describe("readableContent: image attachments", () => {
     expect(imageDimensions(Buffer.from("not an image"), "image/png")).toBeUndefined();
   });
 
+  it("sends an image with the type its bytes say, not the declared one", async () => {
+    // A JPEG served as image/png: declared as PNG, the model's API would reject the whole result.
+    const { blocks } = await readableContent(TINY_JPEG, "image/png");
+    expect(blocks).toEqual([{ type: "image", data: TINY_JPEG.toString("base64"), mimeType: "image/jpeg" }]);
+  });
+
+  it("does not send content as an image when its bytes are not one", async () => {
+    const { blocks, summary } = await readableContent(Buffer.from("<html>not an image</html>"), "image/png");
+    expect(blocks.filter((b) => b.type === "image")).toEqual([]);
+    expect(summary).toMatchObject({ kind: "none", note: expect.stringMatching(/declared as image\/png, but its content is not/) });
+  });
+
+  it("does not decode an image whose size cannot be read", async () => {
+    // A PNG signature with the header cut off: its size could be anything.
+    const { blocks, summary } = await readableContent(TINY_PNG.subarray(0, 12), "image/png");
+    expect(blocks.filter((b) => b.type === "image")).toEqual([]);
+    expect(summary).toMatchObject({ kind: "none", note: expect.stringMatching(/size cannot be read from its header/) });
+  });
+
   it("sniffs an image served as application/octet-stream", async () => {
     const { blocks } = await readableContent(TINY_PNG, "application/octet-stream");
     expect(blocks).toEqual([{ type: "image", data: TINY_PNG.toString("base64"), mimeType: "image/png" }]);
@@ -360,6 +379,25 @@ describe("readableContent: other types", () => {
     const { blocks, summary } = await readableContent(Buffer.from(xml), "application/xml; charset=utf-8");
     expect(blocks).toEqual([{ type: "text", text: xml }]);
     expect(summary).toEqual({ kind: "text", truncated: false });
+  });
+
+  it("does not take a text, XML or JSON file for a PDF because it mentions %PDF-", async () => {
+    for (const [body, type] of [
+      ["Anleitung: eine Datei beginnt mit %PDF-1.7 und endet mit %%EOF.", "text/plain"],
+      ["<Note>%PDF-1.4 header</Note>", "application/xml"],
+      ['{"magic":"%PDF-1.7"}', "application/json"],
+    ] as const) {
+      const { blocks, summary } = await readableContent(Buffer.from(body), type);
+      expect(summary.kind).toBe("text");
+      expect(blocks).toEqual([{ type: "text", text: body }]);
+    }
+  });
+
+  it("still finds a PDF with a little junk before its header when the type is octet-stream", async () => {
+    const pdf = Buffer.concat([Buffer.from("\r\n"), textPdf([["Rechnung Nr. RE-2026-0042 vom 17.11.2026"]])]);
+    const { blocks, summary } = await readableContent(pdf, "application/octet-stream");
+    expect(summary.kind).toBe("text");
+    expect(texts(blocks)[0]).toContain("RE-2026-0042");
   });
 
   it("returns nothing for a type it cannot read", async () => {
