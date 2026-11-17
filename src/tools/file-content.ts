@@ -122,9 +122,11 @@ export interface ReadableSummary {
   /** 1-based pages returned as images. */
   renderedPages?: number[];
   /**
-   * Pages that need an image to be read (a scan, undecodable characters) but have none: the
-   * page-image cap, the time budget or a missing canvas. Their content is only in the raw file,
-   * so the download tools then attach it whatever `output` says.
+   * Pages whose content the readable form lacks: they need an image to be read (a scan,
+   * undecodable characters, an image over the decode limit) but have none — the page-image
+   * cap, the time budget, a missing canvas — or their text could not be read in time. Their
+   * content is only in the raw file, so the download tools then attach it whatever `output`
+   * says.
    */
   missingPageImages?: number[];
   /** True when text or pages were left out because of the limits. */
@@ -415,6 +417,10 @@ interface PdfPage {
   ocr: boolean;
   /** Why the page needs an image, if it does. */
   render?: RenderReason;
+  /** Its layout was measured (otherwise it was judged by its text alone). */
+  checked: boolean;
+  /** It holds an image over the decode limit, which pdf.js leaves out of the render. */
+  oversized: boolean;
   /** The page image is in the response. */
   attached: boolean;
 }
@@ -433,20 +439,30 @@ interface PdfPage {
  */
 function renderReason(
   page: { chars: number; undecodable: number },
+  file: { hasImages: boolean },
   layout?: PageLayout,
   view: number[] = [0, 0, 595, 842],
 ): RenderReason | undefined {
   const visible = Math.max(0, page.chars - (layout?.invisibleChars ?? 0));
   if (visible < READABLE_LIMITS.minPageChars) return "no-text";
-  if (layout) {
-    const area = Math.abs((view[2]! - view[0]!) * (view[3]! - view[1]!));
-    const sparse = visible <= READABLE_LIMITS.scanMaxChars * Math.max(1, area / A4_AREA);
+  if (sparseText(visible, view)) {
+    // Unmeasured (past the page-image cap, or out of time), little text in a file that has
+    // images is assumed to be a scan: treating a scan as text loses the receipt, treating a
+    // short born-digital page as a scan only costs attaching the raw file.
+    if (!layout && file.hasImages) return "scan";
     const pictorial =
-      layout.imageCoverage >= READABLE_LIMITS.scanMinImageCoverage || layout.pathOps >= READABLE_LIMITS.scanMinPathOps;
-    if (sparse && pictorial) return "scan";
+      layout !== undefined &&
+      (layout.imageCoverage >= READABLE_LIMITS.scanMinImageCoverage || layout.pathOps >= READABLE_LIMITS.scanMinPathOps);
+    if (pictorial) return "scan";
   }
   if (page.undecodable > 0) return "undecodable";
   return undefined;
+}
+
+/** At most scanMaxChars visible characters per A4 of page area. */
+function sparseText(visible: number, view: number[]): boolean {
+  const area = Math.abs((view[2]! - view[0]!) * (view[3]! - view[1]!));
+  return visible <= READABLE_LIMITS.scanMaxChars * Math.max(1, area / A4_AREA);
 }
 
 /** "1–3, 5" for [1, 2, 3, 5]. */
@@ -551,6 +567,10 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
   const largest = largestPdfImage(data);
   const largestPixels = largest === undefined ? 0 : largest === "unknown" ? Infinity : largest.width * largest.height;
   const heavy = largestPixels >= READABLE_LIMITS.heavyImagePixels;
+  // pdf.js leaves an image over the decode limit out of the render, so its page would come out
+  // blank: pages that might hold it get a layout first, and are reported instead of rendered.
+  const oversized = largest !== undefined && largest !== "unknown" && largestPixels > READABLE_LIMITS.maxDecodePixels;
+  const file = { hasImages: largest !== undefined };
   // A copy: PDF.js may take over (detach) the buffer it is handed, and the caller still
   // needs the original bytes for the embedded resource.
   const pdf = await getDocumentProxy(new Uint8Array(data), {
@@ -568,17 +588,27 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     let canvasMissing = false;
     let stopped: BudgetExceeded | undefined;
 
-    // Pass 1: the text of every page read. Cheap — no image is decoded for it.
+    // Pass 1: the text of every page read. Cheap — no image is decoded for it — but bounded
+    // too: pages it does not get to are reported as missing.
+    const unread: number[] = [];
     for (let n = 1; n <= readPages; n++) {
-      const page = await pdf.getPage(n);
-      const raw = (await page.getTextContent()).items
+      let items;
+      try {
+        items = (await deadline.race((async () => (await pdf.getPage(n)).getTextContent())())).items;
+      } catch (err) {
+        if (!(err instanceof BudgetExceeded)) throw err;
+        stopped = err;
+        for (let rest = n; rest <= readPages; rest++) unread.push(rest);
+        break;
+      }
+      const raw = items
         .map((item) => ("str" in item ? item.str + (item.hasEOL ? "\n" : "") : ""))
         .join("");
       const { text: clean, replaced } = sanitizeText(raw);
       const text = clean.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
       const chars = nonWhitespaceLength(text);
       const undecodable = replaced + (raw.match(/\uFFFD/g)?.length ?? 0);
-      pdfPages.push({ n, text, chars, undecodable, ocr: false, attached: false });
+      pdfPages.push({ n, text, chars, undecodable, ocr: false, checked: false, oversized: false, attached: false });
     }
 
     // Pass 2: layout, and the page image where one is needed — one page at a time, within the
@@ -609,21 +639,29 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     for (const info of pdfPages) {
       const wanted = pdfPages.filter((p) => p.render).length;
       if (stopped || wanted >= READABLE_LIMITS.maxRenderedPages) {
-        info.render = renderReason(info);
+        info.render = renderReason(info, file);
         continue;
       }
       const page = await pdf.getPage(info.n);
       const work = async () => {
-        if (info.chars < READABLE_LIMITS.minPageChars) {
+        if (info.chars < READABLE_LIMITS.minPageChars && !oversized) {
           // Almost always a scan or a photo: JPEG, unless the file has no image at all.
           info.render = "no-text";
-          await renderPage(page, info, largest !== undefined);
+          await renderPage(page, info, file.hasImages);
         } else {
           const layout = pageLayout(await page.getOperatorList(), OPS, page.view);
           // Free what the layout pass decoded before the render decodes it again.
           page.cleanup();
-          info.ocr = layout.invisibleChars >= info.chars / 2;
-          info.render = renderReason(info, layout, page.view);
+          info.checked = true;
+          info.ocr = info.chars > 0 && layout.invisibleChars >= info.chars / 2;
+          info.render = renderReason(info, file, layout, page.view);
+          const visible = Math.max(0, info.chars - layout.invisibleChars);
+          if (oversized && layout.imageCoverage === 0 && sparseText(visible, page.view)) {
+            // Little text and no image that pdf.js kept: the over-limit image is this page's.
+            info.oversized = true;
+            info.render ??= "scan";
+            return;
+          }
           if (info.render) await renderPage(page, info, layout.imageCoverage >= READABLE_LIMITS.scanMinImageCoverage);
         }
         // Free the decoded images before the slot goes to the next page.
@@ -640,7 +678,7 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
       } catch (err) {
         if (!(err instanceof BudgetExceeded)) throw err;
         stopped = err;
-        info.render ??= renderReason(info);
+        info.render ??= renderReason(info, file);
       }
     }
 
@@ -689,34 +727,49 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     blocks.push(...images);
 
     notes.push(...pageNotes(pdfPages));
-    if (canvasMissing) notes.push(NO_CANVAS_NOTE);
-    if (largestPixels > READABLE_LIMITS.maxDecodePixels && largest !== "unknown" && largest !== undefined) {
-      truncated = true;
+    // Every page that needs an image and has none is listed, with the reason: the download
+    // tools then attach the raw file whatever `output` says, since that is where its content is.
+    const missing = pdfPages.filter((p) => p.render && !p.attached);
+    const tooLarge = missing.filter((p) => p.oversized).map((p) => p.n);
+    if (oversized) {
+      const sized = largest as { width: number; height: number };
       notes.push(
-        `The PDF contains an image of ${largest.width}×${largest.height} px, more than this server decodes ` +
-          `(${READABLE_LIMITS.maxDecodePixels / 1_000_000} MP), so it is missing from the page images. ` +
-          FULL_FILE,
+        `The PDF contains an image of ${sized.width}×${sized.height} px, more than this server decodes ` +
+          `(${READABLE_LIMITS.maxDecodePixels / 1_000_000} MP)` +
+          (tooLarge.length > 0 ? `: ${pages(tooLarge).label.toLowerCase()} ${pages(tooLarge).has} no page image here.` : "."),
       );
     }
-    const notAttached = pdfPages.filter((p) => p.render && !p.attached).map((p) => p.n);
-    if (stopped) {
-      truncated = true;
+    const unmade = missing.filter((p) => !p.oversized);
+    if (unmade.length > 0) {
+      const p = pages(unmade.map((page) => page.n));
+      const guessed = unmade.filter((page) => !page.checked && page.render === "scan").map((page) => page.n);
+      const why = canvasMissing
+        ? "page images are unavailable on this server: the optional @napi-rs/canvas package is not installed"
+        : stopped?.reason === "busy"
+          ? "the server was busy rendering other files and ran out of time for this one"
+          : stopped
+            ? `rendering ran out of time (${Math.round(deadline.budgetMs / 100) / 10} s per call)`
+            : `at most ${READABLE_LIMITS.maxRenderedPages} page images per call`;
       notes.push(
-        (stopped.reason === "busy"
-          ? `The server was busy rendering other files and ran out of time for this one`
-          : `Rendering ran out of time (${Math.round(deadline.budgetMs / 100) / 10} s per call)`) +
-          (notAttached.length > 0
-            ? `: ${pages(notAttached).label.toLowerCase()} ${pages(notAttached).is} not attached as an image`
+        `${p.label} ${p.is} not attached as an image although ${unmade.length > 1 ? "they need" : "it needs"} one (${why})` +
+          (guessed.length > 0
+            ? `; ${pages(guessed).label.toLowerCase()} ${pages(guessed).has} little text in a file with images and ` +
+              `${pages(guessed).is} assumed to be scanned`
             : "") +
-          `. Try again, or get the full file with output="resource".`,
+          ".",
       );
-    } else if (notAttached.length > 0 && !canvasMissing) {
-      truncated = true;
+    } else if (stopped && unread.length === 0) {
       notes.push(
-        `${pages(notAttached).label} would need a page image too but ${pages(notAttached).is} not attached ` +
-          `(at most ${READABLE_LIMITS.maxRenderedPages} page images per call).`,
+        stopped.reason === "busy"
+          ? "The server was busy rendering other files and ran out of time for this one."
+          : `Rendering ran out of time (${Math.round(deadline.budgetMs / 100) / 10} s per call).`,
       );
     }
+    if (unread.length > 0) {
+      notes.push(`${pages(unread).label} could not be read in time.`);
+    }
+    if (missing.length > 0 || unread.length > 0 || stopped) truncated = true;
+    if (canvasMissing && unmade.length === 0) notes.push(NO_CANVAS_NOTE);
     if (readPages < pageCount) {
       notes.push(`Only pages 1–${readPages} of the ${pageCount}-page PDF are read. ${FULL_FILE}`);
     }
@@ -740,7 +793,9 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
         textPages: completeText,
         ...(partialText !== undefined ? { partialTextPage: partialText } : {}),
         renderedPages,
-        ...(notAttached.length > 0 ? { missingPageImages: notAttached } : {}),
+        ...(missing.length > 0 || unread.length > 0
+          ? { missingPageImages: [...missing.map((p) => p.n), ...unread].sort((a, b) => a - b) }
+          : {}),
         ...(truncated ? { truncated } : {}),
         ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
       },

@@ -28,7 +28,7 @@ describe("without @napi-rs/canvas", () => {
     );
     expect(blocks.filter((b) => b.type === "image")).toEqual([]);
     expect(summary).toMatchObject({ kind: "text", textPages: [1], renderedPages: [], missingPageImages: [2] });
-    expect(summary.note).toMatch(/Page images are unavailable on this server/);
+    expect(summary.note).toMatch(/Page 2 is not attached as an image although it needs one \(page images are unavailable on this server/);
   });
 
   it('keeps the raw file even with output="readable", since the scan is only in there', async () => {

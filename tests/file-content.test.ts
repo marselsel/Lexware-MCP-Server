@@ -145,6 +145,25 @@ describe.skipIf(!canvas)("readableContent: PDF without a text layer (scan)", () 
     expect(images(blocks)).toEqual([expect.objectContaining({ mimeType: "image/png" })]);
   });
 
+  it("flags the stamped scan pages past the page-image cap as missing, and keeps the raw file", async () => {
+    // A 5-page scan from a scanner app: every page an image with the app's stamp line.
+    const data = fixturePdf(Array.from({ length: 5 }, () => ({ image: true as const, lines: ["Scanned with CamScanner"] })));
+    const { summary } = await readableContent(data, "application/pdf");
+    expect(summary).toMatchObject({ renderedPages: [1, 2, 3], missingPageImages: [4, 5], truncated: true });
+    expect(summary.note).toMatch(
+      /Pages 4–5 are not attached as an image although they need one \(at most 3 page images per call\); pages 4–5 have little text in a file with images and are assumed to be scanned/,
+    );
+    const res = await binaryResult({
+      uri: "lexware://files/f1",
+      data,
+      contentType: "application/pdf",
+      structuredContent: {},
+      message: "Downloaded.",
+      output: "readable",
+    });
+    expect(res.content.at(-1)).toMatchObject({ type: "resource" });
+  });
+
   it("renders at most maxRenderedPages pages", async () => {
     const pages = Array.from({ length: READABLE_LIMITS.maxRenderedPages + 2 }, () => "scan" as const);
     const { blocks, summary } = await readableContent(fixturePdf(pages), "application/pdf");

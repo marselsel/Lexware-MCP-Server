@@ -116,27 +116,35 @@ export async function binaryResult(opts: {
   // came out of the file, or a page that has to be looked at (a scan) got no image. Then the
   // blob is the only place that content is, and dropping it would lose the receipt. "auto"
   // keeps it up to the size cap, and past it says how to get it.
-  const incomplete = readable.summary.kind === "none" || (readable.summary.missingPageImages?.length ?? 0) > 0;
-  const keepResource = incomplete || (output === "auto" && opts.data.length <= AUTO_RESOURCE_MAX_BYTES);
+  const missing = readable.summary.missingPageImages ?? [];
+  const incomplete = readable.summary.kind === "none" || missing.length > 0;
+  const withinAuto = output === "auto" && opts.data.length <= AUTO_RESOURCE_MAX_BYTES;
+  const keepResource = incomplete || withinAuto;
   const omitted = output === "auto" && !keepResource;
-  const omittedNote = {
-    type: "text" as const,
-    text:
-      `[The original file (${(opts.data.length / 1_000_000).toFixed(1)} MB) is not attached: "auto" only ` +
-      `attaches files up to ${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. Call again with output="resource" to get it.]`,
-  };
+  const notes: { type: "text"; text: string }[] = [];
+  if (omitted) {
+    notes.push({
+      type: "text",
+      text:
+        `[The original file (${(opts.data.length / 1_000_000).toFixed(1)} MB) is not attached: "auto" only ` +
+        `attaches files up to ${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. Call again with output="resource" to get it.]`,
+    });
+  } else if (missing.length > 0 && !withinAuto) {
+    // Attached although "readable" or the size cap would leave it out: say why.
+    notes.push({
+      type: "text",
+      text:
+        `[The original file is attached as an embedded resource, because page${missing.length > 1 ? "s" : ""} ` +
+        `${missing.join(", ")} ${missing.length > 1 ? "are" : "is"} not in the readable form above.]`,
+    });
+  }
   return {
     structuredContent: {
       ...opts.structuredContent,
       readable: readable.summary,
       ...(omitted ? { resourceOmitted: true } : {}),
     },
-    content: [
-      ...text(opts.message),
-      ...readable.blocks,
-      ...(omitted ? [omittedNote] : []),
-      ...(keepResource ? [resource] : []),
-    ],
+    content: [...text(opts.message), ...readable.blocks, ...notes, ...(keepResource ? [resource] : [])],
   };
 }
 

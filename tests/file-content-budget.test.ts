@@ -41,9 +41,16 @@ const canvas = await import("@napi-rs/canvas").catch(() => undefined);
 const texts = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 const images = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "image");
 
-/** A heavy file: page 1 born-digital text, page 2 a scan with a 2000×1000 image. */
-const heavyPdf = () =>
-  fixturePdf([["Rechnung Nr. RE-2026-0042", "Brutto 119,00 EUR"], { image: true, imageKind: "heavy" }]);
+/** A heavy file: page 1 a born-digital invoice page, page 2 a scan with a 2000×1000 image. */
+const INVOICE_PAGE = [
+  "Rechnung Nr. RE-2026-0042 vom 17.11.2026",
+  "Leistungszeitraum Oktober 2026, Kundennummer 10042",
+  "Pos. 1 Beratung 8 Std. a 100,00 EUR = 800,00 EUR",
+  "Pos. 2 Reisekosten pauschal = 100,00 EUR",
+  "Nettobetrag 900,00 EUR, USt 19 % 171,00 EUR",
+  "Bruttobetrag 1.071,00 EUR, zahlbar bis 01.12.2026",
+];
+const heavyPdf = () => fixturePdf([INVOICE_PAGE, { image: true, imageKind: "heavy" }]);
 
 afterEach(() => {
   renders.length = 0;
@@ -229,7 +236,9 @@ describe.skipIf(!canvas)("rendering cost", () => {
       const { blocks, summary } = await readableContent(heavyPdf(), "application/pdf", { timeBudgetMs: 100 });
       expect(texts(blocks)[0]).toContain("RE-2026-0042");
       expect(images(blocks)).toEqual([]);
-      expect(summary.note).toMatch(/The server was busy rendering other files .*: page 2 is not attached as an image/);
+      expect(summary.note).toMatch(
+        /Page 2 is not attached as an image although it needs one \(the server was busy rendering other files/,
+      );
       expect(summary).toMatchObject({ truncated: true, missingPageImages: [2] });
     } finally {
       release();
@@ -237,11 +246,42 @@ describe.skipIf(!canvas)("rendering cost", () => {
     }
   });
 
-  it("stops making page images when the time budget runs out", async () => {
+  it("reports pages it had no time to read at all as missing", async () => {
     const { blocks, summary } = await readableContent(heavyPdf(), "application/pdf", { timeBudgetMs: 0 });
-    expect(texts(blocks)[0]).toContain("RE-2026-0042");
     expect(images(blocks)).toEqual([]);
-    expect(summary.note).toMatch(/Rendering ran out of time .*: page 2 is not attached as an image/);
+    expect(summary).toMatchObject({ kind: "none", missingPageImages: [1, 2], truncated: true });
+    expect(summary.note).toBe("Pages 1–2 could not be read in time.");
+  });
+
+  it("flags a stamped scan that got no image because the server was busy", async () => {
+    let release!: () => void;
+    const holder = renderSlots.run(() => new Promise<void>((r) => (release = r)));
+    try {
+      const data = fixturePdf([{ image: true, imageKind: "heavy", lines: ["Scanned with CamScanner"] }]);
+      const { summary } = await readableContent(data, "application/pdf", { timeBudgetMs: 100 });
+      // binaryResult attaches the raw file for any missingPageImages (tests/binary-result-incomplete.test.ts).
+      expect(summary).toMatchObject({ kind: "text", renderedPages: [], missingPageImages: [1], truncated: true });
+      expect(summary.note).toMatch(
+        /Page 1 is not attached as an image although it needs one \(the server was busy .*\); page 1 has little text in a file with images and is assumed to be scanned/,
+      );
+    } finally {
+      release();
+      await holder;
+    }
+  });
+
+  it("does not count a page whose image is over the decode limit as rendered", async () => {
+    const pagesWithOversized = [
+      { image: true, imageKind: "oversized" },
+      { image: true, imageKind: "oversized", lines: ["Scanned with CamScanner"] },
+    ] as const;
+    for (const page of pagesWithOversized) {
+      const { summary } = await readableContent(fixturePdf([INVOICE_PAGE, page]), "application/pdf");
+      expect(summary).toMatchObject({ textPages: [1, ...("lines" in page ? [2] : [])], renderedPages: [], missingPageImages: [2] });
+      expect(summary.note).toMatch(
+        /an image of 9000×6000 px, more than this server decodes \(50 MP\): page 2 has no page image here/,
+      );
+    }
   });
 
   it("returns at the deadline when a heavy render never settles, and frees the slot after the grace period", async () => {
@@ -254,7 +294,7 @@ describe.skipIf(!canvas)("rendering cost", () => {
     expect(performance.now() - started).toBeLessThan(3000);
     expect(texts(blocks)[0]).toContain("RE-2026-0042");
     expect(summary).toMatchObject({ renderedPages: [], missingPageImages: [2] });
-    expect(summary.note).toMatch(/Rendering ran out of time/);
+    expect(summary.note).toMatch(/\(rendering ran out of time \(0\.3 s per call\)\)/);
     await slotsFree(2000);
     // The instance is not stuck: the next heavy scan renders normally.
     faults.hangRender = false;
@@ -285,8 +325,5 @@ describe.skipIf(!canvas)("rendering cost", () => {
     await slotsFree(3000);
   });
 
-  it("says so when an image is over the decode limit", async () => {
-    const { summary } = await readableContent(fixturePdf([{ image: true, imageKind: "oversized" }]), "application/pdf");
-    expect(summary.note).toMatch(/an image of 9000×6000 px, more than this server decodes \(50 MP\)/);
-  });
+
 });
