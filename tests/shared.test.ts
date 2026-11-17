@@ -272,6 +272,16 @@ describe("binaryResult", () => {
     expect(raw.content.at(-1)).toEqual(resourceOf(big, "application/xml"));
   });
 
+  it("only encodes the raw file as base64 when it is attached", async () => {
+    const line = "<Line><ID>4711</ID></Line>\n";
+    const big = Buffer.from(line.repeat(Math.ceil((AUTO_RESOURCE_MAX_BYTES + 1) / line.length)));
+    const toString = vi.spyOn(big, "toString");
+    await binaryResult(opts(big, "application/xml"));
+    expect(toString.mock.calls.map(([encoding]) => encoding)).not.toContain("base64");
+    await binaryResult({ ...opts(big, "application/xml"), output: "resource" });
+    expect(toString.mock.calls.map(([encoding]) => encoding)).toContain("base64");
+  });
+
   it('"auto" keeps a large file it cannot read: the blob is all there is', async () => {
     const zip = Buffer.alloc(AUTO_RESOURCE_MAX_BYTES + 1);
     zip.write("PK\x03\x04", 0, "latin1");

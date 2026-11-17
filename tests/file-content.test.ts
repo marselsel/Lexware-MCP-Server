@@ -138,12 +138,29 @@ describe.skipIf(!canvas)("readableContent: PDF without a text layer (scan)", () 
     expect(summary).toMatchObject({ kind: "text", renderedPages: [] });
   });
 
-  it("keeps a narrow, tall till receipt legible: a pixel budget, not a fixed long side", async () => {
-    // 80 mm × 400 mm. A 1600 px long side made this 320 px wide.
-    const { blocks } = await readableContent(fixturePdf([{ image: true, size: [227, 1134] }]), "application/pdf");
+  it("keeps an A4-ish page in one image, within the pixel budget", async () => {
+    // 80 mm × 280 mm (1:3.5): below tallAspect, one image.
+    const { blocks } = await readableContent(fixturePdf([{ image: true, size: [227, 794] }]), "application/pdf");
+    expect(images(blocks)).toHaveLength(1);
     const { width, height } = imageSize(images(blocks)[0]!.data);
+    expect(width * height).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
     expect(height).toBeLessThanOrEqual(READABLE_LIMITS.maxImageSide);
-    expect(width).toBeGreaterThanOrEqual(500);
+  });
+
+  it("splits a very tall till receipt into two overlapping halves, each within the budget", async () => {
+    // 80 mm × 640 mm (1:8). As one image it would be held to 2576 px tall, i.e. 322 px wide.
+    const { blocks, summary } = await readableContent(fixturePdf([{ image: true, size: [227, 1814] }]), "application/pdf");
+    const tiles = images(blocks);
+    expect(tiles).toHaveLength(2);
+    const [top, bottom] = tiles.map((t) => imageSize(t.data));
+    for (const tile of [top!, bottom!]) {
+      expect(tile.width * tile.height).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
+      expect(tile.height).toBeLessThanOrEqual(READABLE_LIMITS.maxImageSide);
+      expect(tile.width).toBeGreaterThanOrEqual(600);
+    }
+    expect(top!.height).toBe(bottom!.height);
+    expect(summary).toMatchObject({ renderedPages: [1] });
+    expect(summary.note).toMatch(/Page 1 is very tall \(e\.g\. a till receipt\) and is attached as two overlapping images/);
   });
 
   it("renders a page without text as PNG when the PDF holds no image (vector drawing)", async () => {
@@ -289,6 +306,27 @@ describe("readableContent: image attachments", () => {
   it("sniffs an image served as application/octet-stream", async () => {
     const { blocks } = await readableContent(TINY_PNG, "application/octet-stream");
     expect(blocks).toEqual([{ type: "image", data: TINY_PNG.toString("base64"), mimeType: "image/png" }]);
+  });
+
+  withCanvas("splits a very tall receipt photo into two overlapping halves", async () => {
+    const { createCanvas } = canvas!;
+    const photo = createCanvas(900, 7200); // 1:8
+    const ctx = photo.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, 900, 7200);
+    ctx.fillStyle = "#000";
+    ctx.font = "40px sans-serif";
+    for (let y = 100; y < 7200; y += 80) ctx.fillText("Artikel 4711   1 x 2,49 EUR", 40, y);
+    const jpeg = await photo.encode("jpeg", 80);
+    const { blocks, summary } = await readableContent(jpeg, "image/jpeg");
+    expect(blocks).toHaveLength(2);
+    for (const block of blocks) {
+      const { width, height } = imageSize((block as { data: string }).data);
+      expect(width * height).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
+      expect(height).toBeLessThanOrEqual(READABLE_LIMITS.maxImageSide);
+      expect(width).toBeGreaterThanOrEqual(600); // one image would be 322 px wide
+    }
+    expect(summary.note).toMatch(/^A tall image \(900×7200\), split into two overlapping images \d+ px wide, top half first/);
   });
 
   withCanvas("downscales an oversized image to a JPEG within the size cap", async () => {

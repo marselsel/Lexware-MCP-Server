@@ -70,6 +70,14 @@ export const READABLE_LIMITS = {
   maxImagePixels: 2_400_000,
   /** Longest side, in pixels: the most current Claude models take in without scaling down. */
   maxImageSide: 2576,
+  /**
+   * A page or image taller than this many times its width (a till receipt) is split into two
+   * overlapping images, each within the pixel budget and the long-side cap. One image would
+   * be held to 2576 px tall, so a 1:8 receipt would come out 322 px wide; two come out ~640.
+   */
+  tallAspect: 4.5,
+  /** Rows (in output pixels) the two halves of a tall page share, so no line is cut in two. */
+  tileOverlap: 48,
   /** Highest render resolution, in dots per inch: a small page is not blown up past this. */
   maxRenderDpi: 300,
   /**
@@ -391,6 +399,15 @@ async function readImage(data: Buffer, mimeType: string, budget: Budget): Promis
   }
   const downscale = async () => {
     const image = await canvas.loadImage(data);
+    if (isTall(image.width, image.height)) {
+      const scale = Math.min(1, tiledScale(image.width, image.height));
+      const width = Math.max(1, Math.floor(image.width * scale));
+      const height = Math.max(1, Math.floor(image.height * scale));
+      const note =
+        `A tall image (${image.width}×${image.height}), split into two overlapping images ${width} px wide, ` +
+        "top half first, to keep it legible.";
+      return { blocks: await splitTall(canvas, image, width, height, true), summary: { kind: "image" as const, note } };
+    }
     const scale = Math.min(1, fitScale(image.width, image.height));
     const width = Math.max(1, Math.floor(image.width * scale));
     const height = Math.max(1, Math.floor(image.height * scale));
@@ -442,6 +459,8 @@ interface PdfPage {
   oversized: boolean;
   /** The page image is in the response. */
   attached: boolean;
+  /** A tall page goes out as two images (top and bottom half). */
+  tiles?: number;
 }
 
 /**
@@ -518,6 +537,14 @@ function pageNotes(pdfPages: PdfPage[]): string[] {
         `and ${p.is} attached as an image: read the content from the image, not from the text.`,
     );
   }
+  const tall = pdfPages.filter((p) => p.tiles === 2).map((p) => p.n);
+  if (tall.length > 0) {
+    const p = pages(tall);
+    notes.push(
+      `${p.label} ${p.is} very tall (e.g. a till receipt) and ${p.is} attached as two overlapping images each, ` +
+        "top half first.",
+    );
+  }
   const garbled = pdfPages.filter((p) => p.undecodable > 0);
   if (garbled.length > 0) {
     const shown = garbled.filter((p) => p.attached).map((p) => p.n);
@@ -547,6 +574,51 @@ function fitScale(width: number, height: number): number {
     Math.sqrt(READABLE_LIMITS.maxImagePixels / (width * height)),
     READABLE_LIMITS.maxImageSide / Math.max(width, height),
   );
+}
+
+/** Too tall for one image to keep a legible width: it goes out as two (see tallAspect). */
+function isTall(width: number, height: number): boolean {
+  return height > width * READABLE_LIMITS.tallAspect;
+}
+
+/**
+ * The scale for drawing `width`×`height` as two overlapping tiles, each ⌈H/2⌉ + overlap/2
+ * rows tall, with every tile within the pixel budget and the long-side cap. (Tile pixels
+ * s·w·(s·h/2 + o/2) ≤ budget is a quadratic in s.)
+ */
+function tiledScale(width: number, height: number): number {
+  const half = READABLE_LIMITS.tileOverlap / 2;
+  const bySide = (2 * (READABLE_LIMITS.maxImageSide - half - 1)) / height;
+  const a = (width * height) / 2;
+  const b = half * width;
+  const byPixels = (-b + Math.sqrt(b * b + 4 * a * READABLE_LIMITS.maxImagePixels)) / (2 * a);
+  return Math.min(bySide, byPixels * 0.999);
+}
+
+/**
+ * `image` drawn at `width`×`height` and cut into a top and a bottom tile that overlap by
+ * tileOverlap rows, on white. Each is encoded on its own; together they are one page.
+ */
+async function splitTall(
+  canvas: Canvas,
+  image: InstanceType<Canvas["Image"]>,
+  width: number,
+  height: number,
+  photo: boolean,
+): Promise<ImageBlock[]> {
+  const tile = Math.min(height, Math.ceil(height / 2) + READABLE_LIMITS.tileOverlap / 2);
+  const blocks: ImageBlock[] = [];
+  for (const top of [0, height - tile]) {
+    const surface = canvas.createCanvas(width, tile);
+    const ctx = surface.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, tile);
+    ctx.drawImage(image, 0, -top, width, height);
+    blocks.push(
+      photo ? imageBlock(await surface.encode("jpeg", 85), "image/jpeg") : imageBlock(await surface.encode("png"), "image/png"),
+    );
+  }
+  return blocks;
 }
 
 /**
@@ -639,20 +711,30 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     // only for pages with text, where it is cheap unless the page holds a large image.
     // Past the render cap, and once the budget has run out, pages are judged by text alone.
     const renderPage = async (page: Awaited<ReturnType<typeof pdf.getPage>>, info: PdfPage, photo: boolean) => {
-      if (images.length >= READABLE_LIMITS.maxRenderedPages || canvasMissing) return;
-      if (!(await loadCanvas())) {
+      if (pdfPages.filter((p) => p.attached).length >= READABLE_LIMITS.maxRenderedPages || canvasMissing) return;
+      const canvas = await loadCanvas();
+      if (!canvas) {
         canvasMissing = true;
         return;
       }
-      // Rendered once, in a format chosen up front: JPEG for a page that is mostly a picture
-      // (a scan or a photo — huge as PNG), PNG for vector text (sharp and small).
       const { width, height } = page.getViewport({ scale: 1 });
-      const bytes = await renderPageAsImage(pdf, info.n, {
-        canvasImport: loadCanvasStrict,
-        scale: renderScale(width, height),
-        ...(photo ? { format: "jpeg" as const, quality: 0.8 } : {}),
-      });
-      images.push(imageBlock(bytes, photo ? "image/jpeg" : "image/png"));
+      if (isTall(width, height)) {
+        // A till receipt: rendered once (lossless), then cut into two overlapping halves.
+        const scale = Math.min(tiledScale(width, height), READABLE_LIMITS.maxRenderDpi / 72);
+        const png = await renderPageAsImage(pdf, info.n, { canvasImport: loadCanvasStrict, scale });
+        const full = await canvas.loadImage(Buffer.from(png));
+        images.push(...(await splitTall(canvas, full, full.width, full.height, photo)));
+        info.tiles = 2;
+      } else {
+        // Rendered once, in a format chosen up front: JPEG for a page that is mostly a picture
+        // (a scan or a photo — huge as PNG), PNG for vector text (sharp and small).
+        const bytes = await renderPageAsImage(pdf, info.n, {
+          canvasImport: loadCanvasStrict,
+          scale: renderScale(width, height),
+          ...(photo ? { format: "jpeg" as const, quality: 0.8 } : {}),
+        });
+        images.push(imageBlock(bytes, photo ? "image/jpeg" : "image/png"));
+      }
       info.attached = true;
     };
     for (const info of pdfPages) {

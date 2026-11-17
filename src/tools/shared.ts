@@ -107,9 +107,10 @@ export async function binaryResult(opts: {
   output?: FileOutput;
 }) {
   const output = opts.output ?? "auto";
-  const resource = embeddedResourceBlock(opts.uri, opts.contentType, opts.data);
+  // Built only when it is sent: base64 of a 12 MB scan is a 16 MB string for nothing otherwise.
+  const resource = () => embeddedResourceBlock(opts.uri, opts.contentType, opts.data);
   if (output === "resource") {
-    return { structuredContent: opts.structuredContent, content: [...text(opts.message), resource] };
+    return { structuredContent: opts.structuredContent, content: [...text(opts.message), resource()] };
   }
   const readable = await readableContent(opts.data, opts.contentType);
   // "readable" drops the blob, unless the readable form is missing content: nothing readable
@@ -144,7 +145,7 @@ export async function binaryResult(opts: {
       readable: readable.summary,
       ...(omitted ? { resourceOmitted: true } : {}),
     },
-    content: [...text(opts.message), ...readable.blocks, ...notes, ...(keepResource ? [resource] : [])],
+    content: [...text(opts.message), ...readable.blocks, ...notes, ...(keepResource ? [resource()] : [])],
   };
 }
 
