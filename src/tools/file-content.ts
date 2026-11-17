@@ -399,6 +399,13 @@ async function readImage(data: Buffer, mimeType: string, budget: Budget): Promis
   }
   const downscale = async () => {
     const image = await canvas.loadImage(data);
+    try {
+      return await drawDownscaled(image);
+    } finally {
+      release(image);
+    }
+  };
+  const drawDownscaled = async (image: InstanceType<Canvas["Image"]>) => {
     if (isTall(image.width, image.height)) {
       const scale = Math.min(1, tiledScale(image.width, image.height));
       const width = Math.max(1, Math.floor(image.width * scale));
@@ -576,6 +583,19 @@ function fitScale(width: number, height: number): number {
   );
 }
 
+/**
+ * Free a decoded image's pixels now. @napi-rs/canvas keeps them until V8 collects the object,
+ * which it does not hurry to do (it cannot see native memory): the next heavy render would
+ * start on top of a 48 MP bitmap nobody uses. An empty `src` releases it at once.
+ */
+function release(image: InstanceType<Canvas["Image"]>): void {
+  try {
+    image.src = Buffer.alloc(0);
+  } catch {
+    // Already released, or a canvas build without this behaviour: the GC will get to it.
+  }
+}
+
 /** Too tall for one image to keep a legible width: it goes out as two (see tallAspect). */
 function isTall(width: number, height: number): boolean {
   return height > width * READABLE_LIMITS.tallAspect;
@@ -723,7 +743,11 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
         const scale = Math.min(tiledScale(width, height), READABLE_LIMITS.maxRenderDpi / 72);
         const png = await renderPageAsImage(pdf, info.n, { canvasImport: loadCanvasStrict, scale });
         const full = await canvas.loadImage(Buffer.from(png));
-        images.push(...(await splitTall(canvas, full, full.width, full.height, photo)));
+        try {
+          images.push(...(await splitTall(canvas, full, full.width, full.height, photo)));
+        } finally {
+          release(full);
+        }
         info.tiles = 2;
       } else {
         // Rendered once, in a format chosen up front: JPEG for a page that is mostly a picture
