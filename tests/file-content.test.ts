@@ -198,15 +198,15 @@ describe.skipIf(!canvas)("readableContent: PDF without a text layer (scan)", () 
 
 describe("readableContent: characters pdf.js cannot decode", () => {
   // Stripe-generated invoices map the hyphen, minus sign and dash to U+0000 in their ToUnicode
-  // CMap: "Y9CEGLYM-0003" came out as "Y9CEGLYM\u00000003", "-€85.43" lost its minus.
+  // CMap: an invoice number "AB12CD34-0003" came out as "AB12CD34\u00000003", a credit lost its minus.
   const garbled = () =>
-    fixturePdf([{ lines: ["Invoice number AB12CD34-0003", "Credit -85.43 EUR", "Oct 24-Nov 24, 2026"], font: "nul-hyphen" }]);
+    fixturePdf([{ lines: ["Invoice number AB12CD34-0003", "Credit -12.34 EUR", "Oct 24-Nov 24, 2026"], font: "nul-hyphen" }]);
 
   withCanvas("replaces them with U+FFFD, says so, and attaches the page image to read them from", async () => {
     const { blocks, summary } = await readableContent(garbled(), "application/pdf");
     const [text] = texts(blocks);
     expect(text).toContain("Invoice number AB12CD34\uFFFD0003");
-    expect(text).toContain("Credit \uFFFD85.43 EUR");
+    expect(text).toContain("Credit \uFFFD12.34 EUR");
     expect(text).toContain("(3 undecodable characters shown as \uFFFD; page image attached)");
     expect(texts(blocks).join(" ")).toMatch(/Some characters on page 1 could not be decoded .* page 1 is attached as an image/);
     expect(images(blocks)).toHaveLength(1);
