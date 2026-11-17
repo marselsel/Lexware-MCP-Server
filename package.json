@@ -15,20 +15,20 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
-    "jose": "^6.2.12",
-    "skybridge": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "jose": "^6.2.17",
+    "skybridge": "^2.1.2",
     "unpdf": "^2.2.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@skybridge/devtools": "^2.0.0",
+    "@skybridge/devtools": "^2.1.2",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.6.1",
-    "tsx": "^4.23.13",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "vite": "^8.3.8",
+    "vitest": "^5.1.0"
   },
   "engines": {
     "node": ">=24.14.1"
