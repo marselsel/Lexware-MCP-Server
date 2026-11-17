@@ -39,8 +39,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   picks `auto` (default: readable blocks, plus the raw file as an embedded resource up to 1.5 MB, so
   Claude Code works as before for ordinary invoices), `readable` (text/images only) or `resource`
   (only the raw file, the old shape). A page that needs an image but did not get one (page-image
-  cap, time budget, busy server, missing canvas, image over the decode limit) is listed in
-  `readable.missingPageImages`, and the raw file is then attached in every mode, at any size.
+  cap, time budget, busy server, missing canvas, image over the decode limit, a page that fails)
+  is listed in `readable.missingPageImages`, and the raw file is then attached in every mode, up to
+  5 MB. An image goes out with the type its bytes say, not the declared Content-Type.
   Pages read (30), text length (30,000 characters), page images (3 pages, 2.4 MP and 2576 px each;
   a page taller than 1:4.5, such as a till receipt, goes out as two overlapping halves) and decoded
   image size (50 MP, `LEXWARE_MAX_DECODE_MP`) are capped; heavy pages render one at a time across
@@ -107,6 +108,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   in their schema. A saved prompt or client config that names a removed tool needs updating.
 
 ### Changed
+- **Breaking:** the download tools (`get-voucher-file`, `download-file`, `get-document-file`) no longer
+  return every file as an embedded resource by default. The new `output` parameter defaults to `auto`,
+  which attaches the raw file only up to 1.5 MB (and, when the readable form misses content, up to
+  5 MB); above that the result carries the readable form and a note instead. A client that relies on
+  the embedded resource for large files (e.g. one that saves every download to disk) must pass
+  `output="resource"`, which returns exactly the previous shape at any size.
 - Nothing imports `@modelcontextprotocol/sdk` (the 1.x SDK) any more, and a test enforces it.
   skybridge 2 runs on the v2 packages but still *depends* on 1.x, so 1.x stays hoisted in
   `node_modules` and importing it resolves and typechecks while the running code is the v2 surface.
