@@ -7,19 +7,32 @@ import {
   renderSlots,
   type ReadableBlock,
 } from "../src/tools/file-content.js";
-import { BudgetExceeded, Deadline, Semaphore } from "../src/tools/render-budget.js";
+import { BudgetExceeded, Deadline, runWithin, Semaphore, settleWithin } from "../src/tools/render-budget.js";
 import { fixturePdf } from "./fixtures/pdf.js";
 
-// Count page renders without changing them. In its own file: the mock replaces "unpdf" for
-// every test here.
+// Count page renders without changing them, and on demand make one that never settles (what a
+// pdf.js render can do once its document is destroyed under it), or an image decode that is
+// slow. In its own file: the mocks replace "unpdf" and the canvas for every test here.
 const renders = vi.hoisted(() => [] as { page: number; options: Record<string, unknown> }[]);
+const faults = vi.hoisted(() => ({ hangRender: false, slowDecodeMs: 0 }));
 vi.mock("unpdf", async (importOriginal) => {
   const unpdf = await importOriginal<typeof import("unpdf")>();
   return {
     ...unpdf,
     renderPageAsImage: (pdf: never, page: number, options: Record<string, unknown>) => {
       renders.push({ page, options });
+      if (faults.hangRender) return new Promise(() => {});
       return unpdf.renderPageAsImage(pdf, page, options as never);
+    },
+  };
+});
+vi.mock("@napi-rs/canvas", async (importOriginal) => {
+  const canvas = await importOriginal<typeof import("@napi-rs/canvas")>();
+  return {
+    ...canvas,
+    loadImage: async (...args: Parameters<typeof canvas.loadImage>) => {
+      if (faults.slowDecodeMs) await new Promise((r) => setTimeout(r, faults.slowDecodeMs));
+      return canvas.loadImage(...args);
     },
   };
 });
@@ -34,8 +47,19 @@ const heavyPdf = () =>
 
 afterEach(() => {
   renders.length = 0;
+  faults.hangRender = false;
+  faults.slowDecodeMs = 0;
   vi.restoreAllMocks();
 });
+
+/** Resolves once no render slot is taken, or rejects after `ms`. */
+async function slotsFree(ms: number): Promise<void> {
+  const end = performance.now() + ms;
+  while (renderSlots.running > 0) {
+    if (performance.now() > end) throw new Error(`render slot still taken after ${ms} ms`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
 
 describe("Semaphore", () => {
   it("runs at most `limit` tasks at once, in arrival order", async () => {
@@ -76,6 +100,76 @@ describe("Deadline.race", () => {
     await expect(new Deadline(0).race(Promise.resolve(1))).rejects.toBeInstanceOf(BudgetExceeded);
     await expect(new Deadline(1000).race(Promise.resolve(1))).resolves.toBe(1);
   });
+});
+
+describe("runWithin", () => {
+  const later = <T>(ms: number, value: T) => new Promise<T>((r) => setTimeout(() => r(value), ms));
+
+  it("returns the work's result, and frees the slot", async () => {
+    const slots = new Semaphore(1);
+    await expect(runWithin(() => later(5, "done"), { deadline: new Deadline(1000), graceMs: 100, slots })).resolves.toBe(
+      "done",
+    );
+    expect(slots.running).toBe(0);
+  });
+
+  it("answers at the deadline, cancels, and keeps the slot until the work has stopped", async () => {
+    const slots = new Semaphore(1);
+    const cancel = vi.fn();
+    const started = performance.now();
+    await expect(
+      runWithin(() => later(150, "late"), { deadline: new Deadline(20), graceMs: 1000, slots, cancel }),
+    ).rejects.toEqual(new BudgetExceeded("time"));
+    expect(performance.now() - started).toBeLessThan(120);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(slots.running).toBe(1); // the work is still running: it still counts
+    await slotsFreeOf(slots, 500);
+  });
+
+  it("frees the slot after the grace period when the work never settles", async () => {
+    const slots = new Semaphore(1);
+    await expect(
+      runWithin(() => new Promise(() => {}), { deadline: new Deadline(10), graceMs: 50, slots }),
+    ).rejects.toBeInstanceOf(BudgetExceeded);
+    await slotsFreeOf(slots, 500);
+    await expect(runWithin(async () => "next", { deadline: new Deadline(100), graceMs: 50, slots })).resolves.toBe("next");
+  });
+
+  it("frees the slot when the work fails", async () => {
+    const slots = new Semaphore(1);
+    await expect(
+      runWithin(async () => Promise.reject(new Error("boom")), { deadline: new Deadline(100), graceMs: 50, slots }),
+    ).rejects.toThrow("boom");
+    expect(slots.running).toBe(0);
+  });
+
+  it("does not wait on a cancel that hangs", async () => {
+    const slots = new Semaphore(1);
+    await expect(
+      runWithin(() => new Promise(() => {}), {
+        deadline: new Deadline(10),
+        graceMs: 50,
+        slots,
+        cancel: () => new Promise(() => {}),
+      }),
+    ).rejects.toBeInstanceOf(BudgetExceeded);
+    await slotsFreeOf(slots, 500);
+  });
+
+  it("settleWithin never rejects and never waits longer than asked", async () => {
+    await expect(settleWithin(Promise.reject(new Error("x")), 1000)).resolves.toBeUndefined();
+    const started = performance.now();
+    await settleWithin(new Promise(() => {}), 30);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  async function slotsFreeOf(slots: Semaphore, ms: number) {
+    const end = performance.now() + ms;
+    while (slots.running > 0) {
+      if (performance.now() > end) throw new Error("slot still taken");
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
 });
 
 describe("render size", () => {
@@ -148,6 +242,47 @@ describe.skipIf(!canvas)("rendering cost", () => {
     expect(texts(blocks)[0]).toContain("RE-2026-0042");
     expect(images(blocks)).toEqual([]);
     expect(summary.note).toMatch(/Rendering ran out of time .*: page 2 is not attached as an image/);
+  });
+
+  it("returns at the deadline when a heavy render never settles, and frees the slot after the grace period", async () => {
+    faults.hangRender = true;
+    const started = performance.now();
+    const { blocks, summary } = await readableContent(heavyPdf(), "application/pdf", {
+      timeBudgetMs: 300,
+      cancelGraceMs: 200,
+    });
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(texts(blocks)[0]).toContain("RE-2026-0042");
+    expect(summary).toMatchObject({ renderedPages: [], missingPageImages: [2] });
+    expect(summary.note).toMatch(/Rendering ran out of time/);
+    await slotsFree(2000);
+    // The instance is not stuck: the next heavy scan renders normally.
+    faults.hangRender = false;
+    const next = await readableContent(heavyPdf(), "application/pdf");
+    expect(next.summary.renderedPages).toEqual([2]);
+  });
+
+  it("returns at the deadline when a light render never settles", async () => {
+    faults.hangRender = true;
+    const started = performance.now();
+    const { summary } = await readableContent(fixturePdf(["scan"]), "application/pdf", {
+      timeBudgetMs: 300,
+      cancelGraceMs: 200,
+    });
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(summary).toMatchObject({ renderedPages: [], missingPageImages: [1] });
+  });
+
+  it("keeps a large image's slot until its decode has finished, even after the call gave up", async () => {
+    const big = canvas!.createCanvas(2550, 3300);
+    big.getContext("2d").fillRect(100, 100, 200, 200);
+    const png = await big.encode("png");
+    faults.slowDecodeMs = 400;
+    const { summary } = await readableContent(png, "image/png", { timeBudgetMs: 50 });
+    expect(summary.kind).toBe("none");
+    expect(summary.note).toMatch(/could not be downscaled in time/);
+    expect(renderSlots.running).toBe(1); // the decode is still running, and still counted
+    await slotsFree(3000);
   });
 
   it("says so when an image is over the decode limit", async () => {

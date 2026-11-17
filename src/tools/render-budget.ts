@@ -108,3 +108,72 @@ export class Semaphore {
     this.queue.shift()?.();
   }
 }
+
+/** Resolves once `work` settles or `ms` pass, whichever comes first. Never rejects. */
+export function settleWithin(work: PromiseLike<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+    Promise.resolve(work).then(
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+    );
+  });
+}
+
+/**
+ * Run `work` within `deadline`, holding a slot of `slots` while it runs (if given).
+ *
+ * The returned promise settles with the work's result, or rejects with BudgetExceeded as soon
+ * as the deadline passes ("time") or no slot frees up before it ("busy"): the caller never
+ * waits on work it has given up on. On a timeout `cancel` is called, and the slot stays taken
+ * until the work has really settled — but at most `graceMs` longer. A cancelled pdf.js render
+ * that is still decoding keeps counting against the memory bound; one that never settles (its
+ * document was destroyed before the render started) cannot keep the slot for good. The slot is
+ * released by Semaphore.run's finally on every path.
+ */
+export function runWithin<T>(
+  work: () => Promise<T>,
+  opts: { deadline: Deadline; graceMs: number; slots?: Semaphore; cancel?: () => unknown },
+): Promise<T> {
+  const { deadline, graceMs, slots, cancel } = opts;
+  return new Promise<T>((resolve, reject) => {
+    let answered = false;
+    const answer = (settle: () => void) => {
+      if (!answered) {
+        answered = true;
+        settle();
+      }
+    };
+    const task = async () => {
+      const running = work();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timedOut = new Promise<"timeout">((done) => {
+        timer = setTimeout(() => done("timeout"), deadline.remaining());
+        timer.unref?.();
+      });
+      const outcome = await Promise.race([
+        running.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        ),
+        timedOut,
+      ]);
+      clearTimeout(timer);
+      if (outcome !== "timeout") {
+        answer(() => ("error" in outcome ? reject(outcome.error) : resolve(outcome.value)));
+        return;
+      }
+      answer(() => reject(new BudgetExceeded("time")));
+      const cancelling = (async () => cancel?.())();
+      await settleWithin(Promise.allSettled([cancelling, running]), graceMs);
+    };
+    (slots ? slots.run(task, deadline) : task()).catch((err: unknown) => answer(() => reject(err)));
+  });
+}

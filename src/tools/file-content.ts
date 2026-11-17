@@ -25,7 +25,7 @@
 
 import { z } from "zod";
 import { type PageLayout, pageLayout } from "./pdf-page-layout.js";
-import { BudgetExceeded, Deadline, Semaphore } from "./render-budget.js";
+import { BudgetExceeded, Deadline, runWithin, Semaphore, settleWithin } from "./render-budget.js";
 
 /** How a download tool returns the file. */
 export const FILE_OUTPUT_MODES = ["auto", "resource", "readable"] as const;
@@ -89,6 +89,11 @@ export const READABLE_LIMITS = {
   maxConcurrentRenders: 1,
   /** Time one call may spend on layout and page images before it stops and says so. */
   timeBudgetMs: 20_000,
+  /**
+   * After a timeout, how long a cancelled render may keep its slot while it winds down (a
+   * decode in progress cannot be interrupted). The call itself has already answered.
+   */
+  cancelGraceMs: 15_000,
   /** An image attachment above this many bytes is downscaled before it is returned. */
   maxImageBytes: 1_500_000,
   /** A page with fewer visible non-whitespace characters than this has no usable text layer. */
@@ -243,21 +248,31 @@ export const renderSlots = new Semaphore(READABLE_LIMITS.maxConcurrentRenders);
 const NO_CANVAS_NOTE =
   "Page images are unavailable on this server (the optional @napi-rs/canvas package is not installed).";
 
+/** One call's time budget, and how long cancelled work may keep its render slot. */
+interface Budget {
+  deadline: Deadline;
+  graceMs: number;
+}
+
 /**
  * Readable content blocks for a downloaded file. Never throws: anything it cannot read
- * comes back as a note.
+ * comes back as a note. Always returns within the time budget (plus the time to extract
+ * the text layer), however a render ends.
  */
 export async function readableContent(
   data: Buffer,
   contentType: string,
-  opts: { timeBudgetMs?: number } = {},
+  opts: { timeBudgetMs?: number; cancelGraceMs?: number } = {},
 ): Promise<ReadableContent> {
   const type = baseType(contentType);
-  const deadline = new Deadline(opts.timeBudgetMs ?? READABLE_LIMITS.timeBudgetMs);
+  const budget: Budget = {
+    deadline: new Deadline(opts.timeBudgetMs ?? READABLE_LIMITS.timeBudgetMs),
+    graceMs: opts.cancelGraceMs ?? READABLE_LIMITS.cancelGraceMs,
+  };
   try {
-    if (isPdf(data, type)) return await readPdf(data, deadline);
+    if (isPdf(data, type)) return await readPdf(data, budget);
     const imageType = IMAGE_TYPES.has(type) ? type : sniffImageType(data);
-    if (imageType) return await readImage(data, imageType, deadline);
+    if (imageType) return await readImage(data, imageType, budget);
     if (isTextual(type)) return readText(data);
     return { blocks: [], summary: { kind: "none", note: `No readable form for ${type || "this file type"}.` } };
   } catch (err) {
@@ -333,7 +348,7 @@ function fitsBudget(width: number, height: number): boolean {
  * rendered page (a 2550×3300 scan under 1.5 MB is still 8.4 MP), on a white background (JPEG
  * has no transparency). A large image waits for the render slot, like a heavy PDF page.
  */
-async function readImage(data: Buffer, mimeType: string, deadline: Deadline): Promise<ReadableContent> {
+async function readImage(data: Buffer, mimeType: string, budget: Budget): Promise<ReadableContent> {
   const size = imageDimensions(data, mimeType);
   if (data.length <= READABLE_LIMITS.maxImageBytes && size && fitsBudget(size.width, size.height)) {
     return { blocks: [imageBlock(data, mimeType)], summary: { kind: "image" } };
@@ -367,12 +382,17 @@ async function readImage(data: Buffer, mimeType: string, deadline: Deadline): Pr
     const note = width === image.width ? "Re-encoded as JPEG." : `Downscaled from ${image.width}×${image.height} to ${width}×${height}.`;
     return { blocks: [imageBlock(jpeg, "image/jpeg")], summary: { kind: "image" as const, note } };
   };
+  // A decode cannot be interrupted: on a timeout the call answers, and a large image keeps its
+  // slot until the decode has finished (at most the grace period), so it stays counted.
   const heavy = !size || size.width * size.height >= READABLE_LIMITS.heavyImagePixels;
   try {
-    return await (heavy ? renderSlots.run(() => deadline.race(downscale()), deadline) : deadline.race(downscale()));
+    return await runWithin(downscale, { ...budget, slots: heavy ? renderSlots : undefined });
   } catch (err) {
     if (!(err instanceof BudgetExceeded)) throw err;
-    const note = `The image could not be downscaled in time (the server is busy). Try again. ${FULL_FILE}`;
+    const note =
+      err.reason === "busy"
+        ? `The server was busy with other files and could not downscale this image in time. Try again. ${FULL_FILE}`
+        : `The image could not be downscaled in time. ${FULL_FILE}`;
     return { blocks: [textBlock(`[${note}]`)], summary: { kind: "none", note } };
   }
 }
@@ -523,7 +543,8 @@ export function largestPdfImage(data: Buffer): { width: number; height: number }
   return largest;
 }
 
-async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableContent> {
+async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
+  const { deadline, graceMs } = budget;
   const { getDocumentProxy, getResolvedPDFJS, registerImageDecoders, renderPageAsImage } = await import("unpdf");
   // JBIG2 / JPEG 2000 decoders: scanners write those, and the layout pass decodes images.
   registerImageDecoders();
@@ -577,23 +598,13 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
       // Rendered once, in a format chosen up front: JPEG for a page that is mostly a picture
       // (a scan or a photo — huge as PNG), PNG for vector text (sharp and small).
       const { width, height } = page.getViewport({ scale: 1 });
-      const rendering = renderPageAsImage(pdf, info.n, {
+      const bytes = await renderPageAsImage(pdf, info.n, {
         canvasImport: loadCanvasStrict,
         scale: renderScale(width, height),
         ...(photo ? { format: "jpeg" as const, quality: 0.8 } : {}),
       });
-      try {
-        images.push(imageBlock(await deadline.race(rendering), photo ? "image/jpeg" : "image/png"));
-        info.attached = true;
-      } catch (err) {
-        // Out of time mid-render: destroying the document cancels the render, and the slot is
-        // only released once it has actually stopped, so the memory bound holds.
-        if (err instanceof BudgetExceeded) {
-          await pdf.loadingTask.destroy().catch(() => {});
-          await rendering.catch(() => {});
-        }
-        throw err;
-      }
+      images.push(imageBlock(bytes, photo ? "image/jpeg" : "image/png"));
+      info.attached = true;
     };
     for (const info of pdfPages) {
       const wanted = pdfPages.filter((p) => p.render).length;
@@ -607,25 +618,30 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
           // Almost always a scan or a photo: JPEG, unless the file has no image at all.
           info.render = "no-text";
           await renderPage(page, info, largest !== undefined);
-          return;
+        } else {
+          const layout = pageLayout(await page.getOperatorList(), OPS, page.view);
+          // Free what the layout pass decoded before the render decodes it again.
+          page.cleanup();
+          info.ocr = layout.invisibleChars >= info.chars / 2;
+          info.render = renderReason(info, layout, page.view);
+          if (info.render) await renderPage(page, info, layout.imageCoverage >= READABLE_LIMITS.scanMinImageCoverage);
         }
-        const layout = pageLayout(await deadline.race(page.getOperatorList()), OPS, page.view);
-        // Free what the layout pass decoded before the render decodes it again.
+        // Free the decoded images before the slot goes to the next page.
         page.cleanup();
-        info.ocr = layout.invisibleChars >= info.chars / 2;
-        info.render = renderReason(info, layout, page.view);
-        if (info.render) await renderPage(page, info, layout.imageCoverage >= READABLE_LIMITS.scanMinImageCoverage);
       };
       try {
-        await (heavy ? renderSlots.run(work, deadline) : deadline.race(work()));
+        // On a timeout, destroying the document cancels the render; runWithin answers at once
+        // and keeps a heavy page's slot until the render has stopped (or the grace period ends).
+        await runWithin(work, {
+          ...budget,
+          slots: heavy ? renderSlots : undefined,
+          cancel: () => pdf.loadingTask.destroy(),
+        });
       } catch (err) {
         if (!(err instanceof BudgetExceeded)) throw err;
         stopped = err;
         info.render ??= renderReason(info);
-        continue;
       }
-      // Free the decoded images now; the next page must not stack on top of them.
-      page.cleanup();
     }
 
     const blocks: ReadableBlock[] = [];
@@ -730,7 +746,8 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
       },
     };
   } finally {
-    await pdf.loadingTask.destroy().catch(() => {});
+    // Bounded: after a cancelled render, pdf.js' teardown can wait on work that never settles.
+    await settleWithin(pdf.loadingTask.destroy(), graceMs);
   }
 }
 
