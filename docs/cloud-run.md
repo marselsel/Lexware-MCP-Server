@@ -41,6 +41,7 @@ gcloud run deploy lexware-mcp \
   --region europe-west1 \
   --allow-unauthenticated \
   --max-instances=1 \
+  --memory=1Gi \
   --set-secrets LEXWARE_API_KEY=lexware-api-key:latest \
   --set-env-vars OAUTH_ISSUER=https://YOUR-TENANT.example,OAUTH_RESOURCE=https://YOUR-PUBLIC-URL/mcp,OAUTH_ALLOWED_EMAIL_DOMAINS=example.com
 ```
@@ -54,7 +55,7 @@ it instead of the OAuth env vars:
 
 ```bash
 openssl rand -hex 32 | tr -d '\n' | gcloud secrets versions add mcp-auth-token --data-file=- # after `gcloud secrets create mcp-auth-token ...`
-gcloud run deploy lexware-mcp --source . --region europe-west1 --allow-unauthenticated --max-instances=1 \
+gcloud run deploy lexware-mcp --source . --region europe-west1 --allow-unauthenticated --max-instances=1 --memory=1Gi \
   --set-secrets LEXWARE_API_KEY=lexware-api-key:latest,MCP_AUTH_TOKEN=mcp-auth-token:latest
 ```
 
@@ -64,6 +65,13 @@ gcloud run deploy lexware-mcp --source . --region europe-west1 --allow-unauthent
   IAM gate can't carry the OAuth/bearer flow MCP clients use.)
 - **`--max-instances=1`** keeps the per-process ~2 req/s rate limiter accurate; multiple
   instances would aggregate beyond Lexware's limit and get throttled.
+- **`--memory=1Gi`** (Cloud Run's default is 512 MiB): the download tools render scanned
+  receipts to page images, and pdf.js decodes a page's image at full resolution first. That
+  costs about 12 bytes per image pixel at its peak — a 12 MP phone photo saved as PDF adds
+  ~160 MB to the server's ~110 MB, a 24 MP one ~330 MB, a 48 MP one ~600 MB. Such pages are
+  rendered one at a time across all requests, and images over 50 MP are not decoded at all,
+  so 1 GiB holds the worst case; 512 MiB only holds photos up to about 24 MP. A server that
+  never downloads scans needs no more than the default.
 - Health check path is **`/status`**, not `/healthz` — Google Front End intercepts `/healthz`
   before it reaches the container.
 - Cloud Run injects `PORT`; the server honors it.

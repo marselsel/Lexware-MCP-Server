@@ -50,7 +50,7 @@ describe.each(TOOLS)("%s returns readable content", (tool) => {
 
   it("a scanned PDF: a page image + the embedded resource", async () => {
     const res = await downloadTools({ data: imageOnlyPdf(), contentType: "application/pdf" })[tool]();
-    expect(res.content.filter((c) => c.type === "image")).toEqual([expect.objectContaining({ mimeType: "image/png" })]);
+    expect(res.content.filter((c) => c.type === "image")).toEqual([expect.objectContaining({ mimeType: "image/jpeg" })]);
     expect(res.content.at(-1)!.type).toBe("resource");
   });
 

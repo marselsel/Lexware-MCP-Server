@@ -1,6 +1,8 @@
+import { deflateSync } from "node:zlib";
+
 /**
  * Tiny, hand-built PDFs for the readable-content tests, so no binary fixtures live in the
- * repo. Each page is A4 (595×842 pt); offsets in the xref table are computed, not guessed.
+ * repo. Pages are A4 (595×842 pt) unless sized; offsets in the xref table are computed, not guessed.
  */
 
 function buildPdf(objects: (string | Buffer)[]): Buffer {
@@ -50,7 +52,17 @@ function lit(s: string): string {
 export type FixturePage =
   | string[]
   | "scan"
-  | { lines?: string[]; image?: true | [number, number, number, number]; invisible?: boolean; font?: "nul-hyphen" };
+  | {
+      lines?: string[];
+      image?: true | [number, number, number, number];
+      invisible?: boolean;
+      font?: "nul-hyphen";
+      /** Which image: the small 40×40 scan (default), a 2000×1000 one (a "heavy" file), or an
+       * image whose dictionary claims 9000×6000 px (over the decode limit). */
+      imageKind?: "small" | "heavy" | "oversized";
+      /** Page size in points (default A4). */
+      size?: [number, number];
+    };
 
 /** A grey checkerboard, standing in for a scanned receipt. */
 function scanPixels(w: number, h: number): Buffer {
@@ -74,32 +86,50 @@ const NUL_HYPHEN_CMAP = [
   "endcmap CMapName currentdict /CMap defineresource pop end end",
 ].join("\n");
 
-/** A PDF with the given pages (see {@link FixturePage}), A4 each. */
+/** A PDF with the given pages (see {@link FixturePage}). */
 export function fixturePdf(pages: FixturePage[]): Buffer {
   // 1 catalog, 2 pages, 3 font, 4 the scan image, 5 the NUL-hyphen font, 6 its ToUnicode,
-  // then (page, content) pairs.
-  const pageIds = pages.map((_, i) => 7 + i * 2);
+  // 7 the heavy image, 8 the oversized image, then (page, content) pairs.
+  const pageIds = pages.map((_, i) => 9 + i * 2);
+  const imageOf = (p: FixturePage) => (p === "scan" ? "small" : Array.isArray(p) || !p.image ? undefined : (p.imageKind ?? "small"));
+  const uses = (kind: "small" | "heavy" | "oversized") => pages.some((p) => imageOf(p) === kind);
   const objects: (string | Buffer)[] = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-    stream("/Type /XObject /Subtype /Image /Width 40 /Height 40 /ColorSpace /DeviceRGB /BitsPerComponent 8", scanPixels(40, 40)),
+    uses("small")
+      ? stream("/Type /XObject /Subtype /Image /Width 40 /Height 40 /ColorSpace /DeviceRGB /BitsPerComponent 8", scanPixels(40, 40))
+      : "null",
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
     stream("", NUL_HYPHEN_CMAP),
+    // The large images only when a page draws them: the server reads image sizes from the raw file.
+    uses("heavy")
+      ? stream(
+          "/Type /XObject /Subtype /Image /Width 2000 /Height 1000 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode",
+          deflateSync(Buffer.alloc(2000 * 1000, 200)),
+        )
+      : "null",
+    // Only the dictionary matters: pdf.js skips an image over its maxImageSize before reading it.
+    uses("oversized")
+      ? stream("/Type /XObject /Subtype /Image /Width 9000 /Height 6000 /ColorSpace /DeviceGray /BitsPerComponent 8", Buffer.alloc(16))
+      : "null",
   ];
   pages.forEach((p, i) => {
     const page = p === "scan" ? { image: true as const } : Array.isArray(p) ? { lines: p } : p;
-    const [x, y, w, h] = page.image === true ? [0, 0, 595, 842] : (page.image ?? [0, 0, 0, 0]);
+    const [pw, ph] = "size" in page && page.size ? page.size : [595, 842];
+    const [x, y, w, h] = page.image === true ? [0, 0, pw, ph] : (page.image ?? [0, 0, 0, 0]);
     const font = page.font === "nul-hyphen" ? "/F2" : "/F1";
+    const im = { small: "/Im1", heavy: "/Im2", oversized: "/Im3" }[("imageKind" in page && page.imageKind) || "small"];
     const ops = [
-      page.image ? `q ${w} 0 0 ${h} ${x} ${y} cm /Im1 Do Q` : "",
+      page.image ? `q ${w} 0 0 ${h} ${x} ${y} cm ${im} Do Q` : "",
       ...(page.lines ?? []).map(
         (l, j) => `BT ${page.invisible ? "3 Tr " : ""}${font} 12 Tf 50 ${780 - j * 18} Td (${lit(l)}) Tj ET`,
       ),
     ].filter(Boolean);
     objects.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ` +
-        `/Resources << /Font << /F1 3 0 R /F2 5 0 R >> /XObject << /Im1 4 0 R >> >> /Contents ${pageIds[i]! + 1} 0 R >>`,
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pw} ${ph}] ` +
+        `/Resources << /Font << /F1 3 0 R /F2 5 0 R >> /XObject << /Im1 4 0 R /Im2 7 0 R /Im3 8 0 R >> >> ` +
+        `/Contents ${pageIds[i]! + 1} 0 R >>`,
       stream("", ops.join("\n")),
     );
   });

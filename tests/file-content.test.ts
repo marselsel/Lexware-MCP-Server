@@ -7,10 +7,17 @@ import { fixturePdf, imageOnlyPdf, textPdf, TINY_PNG } from "./fixtures/pdf.js";
 const texts = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 const images = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "image");
 
-/** Width and height from a PNG's IHDR chunk. */
-function pngSize(base64: string): { width: number; height: number } {
-  const png = Buffer.from(base64, "base64");
-  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
+/** Width and height of a PNG (its IHDR chunk) or a JPEG (its SOF segment). */
+function imageSize(base64: string): { width: number; height: number } {
+  const b = Buffer.from(base64, "base64");
+  if (b[0] === 0x89) return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
+  for (let i = 2; i < b.length; i += 2 + b.readUInt16BE(i + 2)) {
+    const marker = b[i + 1]!;
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { width: b.readUInt16BE(i + 7), height: b.readUInt16BE(i + 5) };
+    }
+  }
+  throw new Error("not a PNG or JPEG");
 }
 
 describe("readableContent: PDF with a text layer", () => {
@@ -51,13 +58,14 @@ describe("readableContent: PDF with a text layer", () => {
 });
 
 describe("readableContent: PDF without a text layer (scan)", () => {
-  it("renders the page to a PNG image block, capped in size", async () => {
+  it("renders the page to a JPEG within the pixel budget", async () => {
     const { blocks, summary } = await readableContent(imageOnlyPdf(), "application/pdf");
     const [image] = images(blocks);
-    expect(image).toMatchObject({ type: "image", mimeType: "image/png" });
-    const { width, height } = pngSize(image!.data);
-    expect(Math.max(width, height)).toBeLessThanOrEqual(READABLE_LIMITS.maxImageSide);
-    expect(Math.max(width, height)).toBeGreaterThan(READABLE_LIMITS.maxImageSide / 2); // legible, not a thumbnail
+    expect(image).toMatchObject({ type: "image", mimeType: "image/jpeg" });
+    const { width, height } = imageSize(image!.data);
+    expect(width * height).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
+    expect(width * height).toBeGreaterThan(READABLE_LIMITS.maxImagePixels * 0.95); // uses the budget
+    expect(width).toBeGreaterThan(1250); // A4 at ~160 dpi: legible, not a thumbnail
     expect(texts(blocks).join(" ")).toMatch(/Page 1 has little or no visible text/);
     expect(summary).toMatchObject({ kind: "image", pageCount: 1, textPages: [], renderedPages: [1] });
   });
@@ -114,11 +122,17 @@ describe("readableContent: PDF without a text layer (scan)", () => {
     expect(summary).toMatchObject({ kind: "text", renderedPages: [] });
   });
 
-  it("does not render a blank page", async () => {
-    const { blocks, summary } = await readableContent(fixturePdf([[]]), "application/pdf");
-    expect(images(blocks)).toEqual([]);
-    expect(texts(blocks)).toEqual(["[Page 1 is blank.]"]);
-    expect(summary.kind).toBe("none");
+  it("keeps a narrow, tall till receipt legible: a pixel budget, not a fixed long side", async () => {
+    // 80 mm × 400 mm. A 1600 px long side made this 320 px wide.
+    const { blocks } = await readableContent(fixturePdf([{ image: true, size: [227, 1134] }]), "application/pdf");
+    const { width, height } = imageSize(images(blocks)[0]!.data);
+    expect(height).toBeLessThanOrEqual(READABLE_LIMITS.maxImageSide);
+    expect(width).toBeGreaterThanOrEqual(500);
+  });
+
+  it("renders a page without text as PNG when the PDF holds no image (vector drawing)", async () => {
+    const { blocks } = await readableContent(fixturePdf([[]]), "application/pdf");
+    expect(images(blocks)).toEqual([expect.objectContaining({ mimeType: "image/png" })]);
   });
 
   it("renders at most maxRenderedPages pages", async () => {
@@ -208,7 +222,7 @@ describe("readableContent: image attachments", () => {
     const { blocks, summary } = await readableContent(png, "image/png");
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toMatchObject({ type: "image", mimeType: "image/jpeg" });
-    expect(summary.note).toBe("Downscaled from 3000×2000 to 1600×1067.");
+    expect(summary.note).toBe("Downscaled from 3000×2000 to 1897×1264.");
   });
 });
 
