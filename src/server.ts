@@ -5,7 +5,7 @@ import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { buildServerInstructions } from "./instructions.js";
 import { LexwareClient } from "./lexware/client.js";
 import { advertisedScopes, buildOAuthMetadata, oauthGate, protectedResourceMetadataUrl } from "./oauth.js";
-import { checkPageImages } from "./tools/file-content.js";
+import { checkPageImages, configureFileRendering } from "./tools/file-content.js";
 import { createFinalizeConfirmation } from "./tools/finalize-confirmation.js";
 import { registerTools } from "./tools/index.js";
 import { INERT_APP_JSON } from "./server-body-parsing.js";
@@ -35,6 +35,8 @@ try {
 if (!process.env.__PORT) {
   process.env.__PORT = String(config.port);
 }
+
+configureFileRendering(config.fileRendering);
 
 const client = new LexwareClient({
   baseUrl: config.lexwareApiBaseUrl,

@@ -76,7 +76,8 @@ export const READABLE_LIMITS = {
    * Largest image pdf.js decodes, in pixels (its `maxImageSize`); a bigger one is left out with
    * a note. Rendering a page costs about 12 bytes per image pixel at its peak (measured: a
    * 12 MP photo ≈ +160 MB RSS, 24 MP ≈ +330 MB, 48 MP ≈ +600 MB), so 50 MP — a 48 MP phone
-   * photo, a 600 dpi A4 scan — is what one render may take on a 1 GiB instance.
+   * photo, a 600 dpi A4 scan — is what one render may take on a 1 GiB instance. Set
+   * LEXWARE_MAX_DECODE_MP to lower it (20 for a 512 MiB instance).
    */
   maxDecodePixels: 50_000_000,
   /**
@@ -87,7 +88,10 @@ export const READABLE_LIMITS = {
   heavyImagePixels: 2_000_000,
   /** Heavy pages decoded or rendered at the same time, across all calls (bounds peak memory). */
   maxConcurrentRenders: 1,
-  /** Time one call may spend on layout and page images before it stops and says so. */
+  /**
+   * Time one call may spend on layout and page images before it stops and says so
+   * (LEXWARE_RENDER_TIME_BUDGET_MS).
+   */
   timeBudgetMs: 20_000,
   /**
    * After a timeout, how long a cancelled render may keep its slot while it winds down (a
@@ -109,6 +113,21 @@ export const READABLE_LIMITS = {
   /** "A lot of vector drawing": at least this many path operations (e.g. text as outlines). */
   scanMinPathOps: 100,
 } as const;
+
+/**
+ * The limits a deployment can change (env vars, read and validated in src/config.ts): a
+ * 512 MiB instance lowers the decode limit, a slow one raises the time budget.
+ */
+const settings: { maxDecodePixels: number; timeBudgetMs: number } = {
+  maxDecodePixels: READABLE_LIMITS.maxDecodePixels,
+  timeBudgetMs: READABLE_LIMITS.timeBudgetMs,
+};
+
+/** Apply the deployment's limits; unset ones keep their defaults (READABLE_LIMITS). */
+export function configureFileRendering(next: { maxDecodePixels?: number; timeBudgetMs?: number }): void {
+  settings.maxDecodePixels = next.maxDecodePixels ?? READABLE_LIMITS.maxDecodePixels;
+  settings.timeBudgetMs = next.timeBudgetMs ?? READABLE_LIMITS.timeBudgetMs;
+}
 
 /** Summary of what was made readable, for structuredContent. */
 export interface ReadableSummary {
@@ -268,7 +287,7 @@ export async function readableContent(
 ): Promise<ReadableContent> {
   const type = baseType(contentType);
   const budget: Budget = {
-    deadline: new Deadline(opts.timeBudgetMs ?? READABLE_LIMITS.timeBudgetMs),
+    deadline: new Deadline(opts.timeBudgetMs ?? settings.timeBudgetMs),
     graceMs: opts.cancelGraceMs ?? READABLE_LIMITS.cancelGraceMs,
   };
   try {
@@ -355,10 +374,10 @@ async function readImage(data: Buffer, mimeType: string, budget: Budget): Promis
   if (data.length <= READABLE_LIMITS.maxImageBytes && size && fitsBudget(size.width, size.height)) {
     return { blocks: [imageBlock(data, mimeType)], summary: { kind: "image" } };
   }
-  if (size && size.width * size.height > READABLE_LIMITS.maxDecodePixels) {
+  if (size && size.width * size.height > settings.maxDecodePixels) {
     const note =
       `The image is ${size.width}×${size.height} px, more than this server decodes ` +
-      `(${READABLE_LIMITS.maxDecodePixels / 1_000_000} MP). ${FULL_FILE}`;
+      `(${settings.maxDecodePixels / 1_000_000} MP). ${FULL_FILE}`;
     return { blocks: [textBlock(`[${note}]`)], summary: { kind: "none", note } };
   }
   const canvas = await loadCanvas();
@@ -569,13 +588,13 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
   const heavy = largestPixels >= READABLE_LIMITS.heavyImagePixels;
   // pdf.js leaves an image over the decode limit out of the render, so its page would come out
   // blank: pages that might hold it get a layout first, and are reported instead of rendered.
-  const oversized = largest !== undefined && largest !== "unknown" && largestPixels > READABLE_LIMITS.maxDecodePixels;
+  const oversized = largest !== undefined && largest !== "unknown" && largestPixels > settings.maxDecodePixels;
   const file = { hasImages: largest !== undefined };
   // A copy: PDF.js may take over (detach) the buffer it is handed, and the caller still
   // needs the original bytes for the embedded resource.
   const pdf = await getDocumentProxy(new Uint8Array(data), {
     verbosity: 0,
-    maxImageSize: READABLE_LIMITS.maxDecodePixels,
+    maxImageSize: settings.maxDecodePixels,
   });
   const { OPS } = await getResolvedPDFJS();
   try {
@@ -735,7 +754,7 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
       const sized = largest as { width: number; height: number };
       notes.push(
         `The PDF contains an image of ${sized.width}×${sized.height} px, more than this server decodes ` +
-          `(${READABLE_LIMITS.maxDecodePixels / 1_000_000} MP)` +
+          `(${settings.maxDecodePixels / 1_000_000} MP)` +
           (tooLarge.length > 0 ? `: ${pages(tooLarge).label.toLowerCase()} ${pages(tooLarge).has} no page image here.` : "."),
       );
     }

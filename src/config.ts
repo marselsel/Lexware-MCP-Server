@@ -148,6 +148,16 @@ export interface Config {
    * restart. Set it when more than one instance can answer the same client.
    */
   requestStateKey?: string;
+  /**
+   * Limits for turning downloaded files into page images (src/tools/file-content.ts). Lower
+   * them on a small instance: rendering a page peaks at about 12 bytes per image pixel.
+   */
+  fileRendering: {
+    /** `LEXWARE_MAX_DECODE_MP`: largest image decoded, in pixels (default 50 MP). */
+    maxDecodePixels: number;
+    /** `LEXWARE_RENDER_TIME_BUDGET_MS`: time one download may spend on page images (default 20 s). */
+    timeBudgetMs: number;
+  };
   /** Non-fatal configuration notices to log at startup (e.g. a flag that was overridden). */
   warnings: string[];
 }
@@ -163,6 +173,16 @@ function parseBool(raw: string | undefined, fallback: boolean): boolean {
   if (["true", "1", "yes", "on"].includes(v)) return true;
   if (["false", "0", "no", "off"].includes(v)) return false;
   throw new ConfigError(`Invalid boolean value "${raw}" (expected true/false).`);
+}
+
+/** Parse an integer env value within [min, max], or the fallback when unset. */
+function parseIntInRange(raw: string | undefined, name: string, fallback: number, min: number, max: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw.trim());
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new ConfigError(`Invalid ${name} "${raw}" (expected an integer ${min}-${max}).`);
+  }
+  return n;
 }
 
 function parsePort(raw: string | undefined): number {
@@ -511,6 +531,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     capabilities: { read: true, drafts: enableDrafts, finalize: enableFinalize, urlUpload: enableUrlUpload },
     finalizeElicitation,
     requestStateKey,
+    fileRendering: {
+      maxDecodePixels: parseIntInRange(env.LEXWARE_MAX_DECODE_MP, "LEXWARE_MAX_DECODE_MP", 50, 1, 200) * 1_000_000,
+      timeBudgetMs: parseIntInRange(env.LEXWARE_RENDER_TIME_BUDGET_MS, "LEXWARE_RENDER_TIME_BUDGET_MS", 20_000, 1_000, 120_000),
+    },
     warnings,
   };
 }

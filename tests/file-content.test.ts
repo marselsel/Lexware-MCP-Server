@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { imageDimensions, READABLE_LIMITS, readableContent, type ReadableBlock } from "../src/tools/file-content.js";
+import {
+  configureFileRendering,
+  imageDimensions,
+  READABLE_LIMITS,
+  readableContent,
+  type ReadableBlock,
+} from "../src/tools/file-content.js";
 import { binaryResult, withJsonText } from "../src/tools/shared.js";
 import { fixturePdf, imageOnlyPdf, pngHeader, textPdf, TINY_JPEG, TINY_PNG } from "./fixtures/pdf.js";
 
@@ -246,6 +252,18 @@ describe("readableContent: image attachments", () => {
     const corner = createCanvas(1, 1);
     corner.getContext("2d").drawImage(out, 0, 0, 1, 1, 0, 0, 1, 1);
     expect(corner.getContext("2d").getImageData(0, 0, 1, 1).data[0]).toBeGreaterThan(240);
+  });
+
+  it("takes a lower decode limit from the deployment (LEXWARE_MAX_DECODE_MP)", async () => {
+    configureFileRendering({ maxDecodePixels: 5_000_000 });
+    try {
+      const { summary } = await readableContent(pngHeader(2550, 3300), "image/png");
+      expect(summary).toMatchObject({ kind: "none", note: expect.stringMatching(/more than this server decodes \(5 MP\)/) });
+    } finally {
+      configureFileRendering({});
+    }
+    const { summary } = await readableContent(pngHeader(9000, 6000), "image/png");
+    expect(summary.note).toMatch(/\(50 MP\)/);
   });
 
   it("does not decode an image over the decode limit", async () => {

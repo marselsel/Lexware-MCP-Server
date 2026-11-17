@@ -206,6 +206,8 @@ LEXWARE_API_KEY=... MCP_AUTH_TOKEN=... npm start
 | `LEXWARE_APP_BASE_URL` | `https://app.lexware.de` | Web-app base for document deeplinks |
 | `PORT` | `8080` | Listen port (your platform may inject this) |
 | `LEXWARE_DEBUG_LOGGING` | `false` | Verbose logs (never secrets/bodies) |
+| `LEXWARE_MAX_DECODE_MP` | `50` | Largest image (in megapixels) the download tools decode to make a page image; a larger one is reported, and the raw file attached instead. Rendering peaks at ~12 bytes per image pixel, so lower it on small instances: `20` for 512 MiB (see `docs/cloud-run.md`) |
+| `LEXWARE_RENDER_TIME_BUDGET_MS` | `20000` | Time one download may spend on page images before it answers without the rest (they are listed as missing, and the raw file is attached). 1000–120000 |
 
 ¹ The server needs **either** `OAUTH_ISSUER` (OAuth) **or** `MCP_AUTH_TOKEN` (static). It
 **refuses to start** with neither, unless `MCP_ALLOW_UNAUTHENTICATED=true`.

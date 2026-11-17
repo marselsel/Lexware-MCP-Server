@@ -70,8 +70,9 @@ gcloud run deploy lexware-mcp --source . --region europe-west1 --allow-unauthent
   costs about 12 bytes per image pixel at its peak — a 12 MP phone photo saved as PDF adds
   ~160 MB to the server's ~110 MB, a 24 MP one ~330 MB, a 48 MP one ~600 MB. Such pages are
   rendered one at a time across all requests, and images over 50 MP are not decoded at all,
-  so 1 GiB holds the worst case; 512 MiB only holds photos up to about 24 MP. A server that
-  never downloads scans needs no more than the default.
+  so 1 GiB holds the worst case. To stay on 512 MiB, add
+  `--set-env-vars LEXWARE_MAX_DECODE_MP=20`: larger photos are then not rendered (the tools say
+  so and attach the raw file). A server that never downloads scans needs no more than the default.
 - Health check path is **`/status`**, not `/healthz` — Google Front End intercepts `/healthz`
   before it reaches the container.
 - Cloud Run injects `PORT`; the server honors it.
