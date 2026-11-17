@@ -116,6 +116,12 @@ export interface ReadableSummary {
   partialTextPage?: number;
   /** 1-based pages returned as images. */
   renderedPages?: number[];
+  /**
+   * Pages that need an image to be read (a scan, undecodable characters) but have none: the
+   * page-image cap, the time budget or a missing canvas. Their content is only in the raw file,
+   * so the download tools then attach it whatever `output` says.
+   */
+  missingPageImages?: number[];
   /** True when text or pages were left out because of the limits. */
   truncated?: boolean;
   /** Why nothing (or less than expected) could be extracted. */
@@ -683,7 +689,9 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
         (stopped.reason === "busy"
           ? `The server was busy rendering other files and ran out of time for this one`
           : `Rendering ran out of time (${Math.round(deadline.budgetMs / 100) / 10} s per call)`) +
-          (notAttached.length > 0 ? `: ${pages(notAttached).label.toLowerCase()} ${pages(notAttached).is} not attached as an image` : "") +
+          (notAttached.length > 0
+            ? `: ${pages(notAttached).label.toLowerCase()} ${pages(notAttached).is} not attached as an image`
+            : "") +
           `. Try again, or get the full file with output="resource".`,
       );
     } else if (notAttached.length > 0 && !canvasMissing) {
@@ -694,9 +702,7 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
       );
     }
     if (readPages < pageCount) {
-      notes.push(
-        `Only pages 1–${readPages} of the ${pageCount}-page PDF are read. ${FULL_FILE}`,
-      );
+      notes.push(`Only pages 1–${readPages} of the ${pageCount}-page PDF are read. ${FULL_FILE}`);
     }
     if (blocks.length === 0 && notes.length === 0) notes.push("The PDF has no extractable text.");
     for (const note of notes) blocks.push(textBlock(`[${note}]`));
@@ -718,6 +724,7 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
         textPages: completeText,
         ...(partialText !== undefined ? { partialTextPage: partialText } : {}),
         renderedPages,
+        ...(notAttached.length > 0 ? { missingPageImages: notAttached } : {}),
         ...(truncated ? { truncated } : {}),
         ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
       },

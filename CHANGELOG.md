@@ -38,7 +38,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   come back as U+FFFD with a note, plus the page image to read them from. A new `output` parameter
   picks `auto` (default: readable blocks, plus the raw file as an embedded resource up to 1.5 MB, so
   Claude Code works as before for ordinary invoices), `readable` (text/images only) or `resource`
-  (only the raw file, the old shape). Pages read (30), text length (30,000 characters), page images
+  (only the raw file, the old shape); the raw file is kept whenever the readable form misses
+  content, e.g. a scanned page that got no image. Pages read (30), text length (30,000 characters), page images
   (3, at most 2.4 MP each) and decoded image size (50 MP) are capped; heavy pages render one at a
   time across requests, within a 20 s budget per call. One helper serves all three tools. Uses
   `unpdf` (text) and the optional `@napi-rs/canvas` (page images); without the canvas, a warning is

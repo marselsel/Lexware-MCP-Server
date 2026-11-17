@@ -136,7 +136,7 @@ describe.skipIf(!canvas)("rendering cost", () => {
       expect(texts(blocks)[0]).toContain("RE-2026-0042");
       expect(images(blocks)).toEqual([]);
       expect(summary.note).toMatch(/The server was busy rendering other files .*: page 2 is not attached as an image/);
-      expect(summary.truncated).toBe(true);
+      expect(summary).toMatchObject({ truncated: true, missingPageImages: [2] });
     } finally {
       release();
       await holder;

@@ -8,6 +8,7 @@ vi.mock("@napi-rs/canvas", () => {
 
 const { checkPageImages, readableContent } = await import("../src/tools/file-content.js");
 const { fixturePdf, TINY_PNG } = await import("./fixtures/pdf.js");
+const { binaryResult } = await import("../src/tools/shared.js");
 
 describe("without @napi-rs/canvas", () => {
   it("warns once, clearly, and reports that page images are unavailable", async () => {
@@ -26,8 +27,21 @@ describe("without @napi-rs/canvas", () => {
       "application/pdf",
     );
     expect(blocks.filter((b) => b.type === "image")).toEqual([]);
-    expect(summary).toMatchObject({ kind: "text", textPages: [1], renderedPages: [] });
+    expect(summary).toMatchObject({ kind: "text", textPages: [1], renderedPages: [], missingPageImages: [2] });
     expect(summary.note).toMatch(/Page images are unavailable on this server/);
+  });
+
+  it('keeps the raw file even with output="readable", since the scan is only in there', async () => {
+    const data = fixturePdf([{ image: true, lines: ["Scanned with CamScanner"] }]);
+    const res = await binaryResult({
+      uri: "lexware://files/f1",
+      data,
+      contentType: "application/pdf",
+      structuredContent: {},
+      message: "Downloaded.",
+      output: "readable",
+    });
+    expect(res.content.at(-1)).toMatchObject({ type: "resource", resource: { blob: data.toString("base64") } });
   });
 
   it("passes a small image through, since nothing needs decoding", async () => {

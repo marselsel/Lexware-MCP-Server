@@ -112,12 +112,12 @@ export async function binaryResult(opts: {
     return { structuredContent: opts.structuredContent, content: [...text(opts.message), resource] };
   }
   const readable = await readableContent(opts.data, opts.contentType);
-  // "readable" drops the blob, unless nothing readable came out of the file: then the blob
-  // is all there is, and returning neither would lose the file entirely. "auto" keeps it up
-  // to the size cap, and past it says how to get it.
-  const nothingReadable = readable.summary.kind === "none";
-  const keepResource =
-    nothingReadable || (output === "auto" && opts.data.length <= AUTO_RESOURCE_MAX_BYTES);
+  // "readable" drops the blob, unless the readable form is missing content: nothing readable
+  // came out of the file, or a page that has to be looked at (a scan) got no image. Then the
+  // blob is the only place that content is, and dropping it would lose the receipt. "auto"
+  // keeps it up to the size cap, and past it says how to get it.
+  const incomplete = readable.summary.kind === "none" || (readable.summary.missingPageImages?.length ?? 0) > 0;
+  const keepResource = incomplete || (output === "auto" && opts.data.length <= AUTO_RESOURCE_MAX_BYTES);
   const omitted = output === "auto" && !keepResource;
   const omittedNote = {
     type: "text" as const,
