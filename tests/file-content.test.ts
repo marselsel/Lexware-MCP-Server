@@ -1,8 +1,13 @@
-import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { describe, expect, it } from "vitest";
 import { imageDimensions, READABLE_LIMITS, readableContent, type ReadableBlock } from "../src/tools/file-content.js";
 import { binaryResult, withJsonText } from "../src/tools/shared.js";
 import { fixturePdf, imageOnlyPdf, pngHeader, textPdf, TINY_JPEG, TINY_PNG } from "./fixtures/pdf.js";
+
+// @napi-rs/canvas is an optional dependency: without it, the tests that need page images or a
+// downscaled image are skipped rather than failing (tests/file-content-no-canvas.test.ts covers
+// that case).
+const canvas = await import("@napi-rs/canvas").catch(() => undefined);
+const withCanvas = it.skipIf(!canvas);
 
 const texts = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 const images = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "image");
@@ -62,7 +67,7 @@ describe("readableContent: PDF with a text layer", () => {
   });
 });
 
-describe("readableContent: PDF without a text layer (scan)", () => {
+describe.skipIf(!canvas)("readableContent: PDF without a text layer (scan)", () => {
   it("renders the page to a JPEG within the pixel budget", async () => {
     const { blocks, summary } = await readableContent(imageOnlyPdf(), "application/pdf");
     const [image] = images(blocks);
@@ -155,7 +160,7 @@ describe("readableContent: characters pdf.js cannot decode", () => {
   const garbled = () =>
     fixturePdf([{ lines: ["Invoice number AB12CD34-0003", "Credit -85.43 EUR", "Oct 24-Nov 24, 2026"], font: "nul-hyphen" }]);
 
-  it("replaces them with U+FFFD, says so, and attaches the page image to read them from", async () => {
+  withCanvas("replaces them with U+FFFD, says so, and attaches the page image to read them from", async () => {
     const { blocks, summary } = await readableContent(garbled(), "application/pdf");
     const [text] = texts(blocks);
     expect(text).toContain("Invoice number AB12CD34\uFFFD0003");
@@ -202,7 +207,8 @@ describe("readableContent: image attachments", () => {
     expect(blocks).toEqual([{ type: "image", data: TINY_JPEG.toString("base64"), mimeType: "image/jpeg" }]);
   });
 
-  it("downscales an image that is small in bytes but large in pixels, onto white", async () => {
+  withCanvas("downscales an image that is small in bytes but large in pixels, onto white", async () => {
+    const { createCanvas, loadImage } = canvas!;
     // A 2550×3300 scan (8.4 MP) on a transparent background compresses to well under 1.5 MB.
     const scan = createCanvas(2550, 3300);
     const ctx = scan.getContext("2d");
@@ -248,7 +254,8 @@ describe("readableContent: image attachments", () => {
     expect(blocks).toEqual([{ type: "image", data: TINY_PNG.toString("base64"), mimeType: "image/png" }]);
   });
 
-  it("downscales an oversized image to a JPEG within the size cap", async () => {
+  withCanvas("downscales an oversized image to a JPEG within the size cap", async () => {
+    const { createCanvas } = canvas!;
     const big = createCanvas(3000, 2000);
     const ctx = big.getContext("2d");
     const pixels = ctx.createImageData(3000, 2000);

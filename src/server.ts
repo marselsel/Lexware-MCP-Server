@@ -5,6 +5,7 @@ import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { buildServerInstructions } from "./instructions.js";
 import { LexwareClient } from "./lexware/client.js";
 import { advertisedScopes, buildOAuthMetadata, oauthGate, protectedResourceMetadataUrl } from "./oauth.js";
+import { checkPageImages } from "./tools/file-content.js";
 import { createFinalizeConfirmation } from "./tools/finalize-confirmation.js";
 import { registerTools } from "./tools/index.js";
 import { INERT_APP_JSON } from "./server-body-parsing.js";
@@ -198,7 +199,14 @@ if (config.auth.mode === "none") {
   );
 }
 
-export default await app.run();
+const server = await app.run();
+
+// Load the optional canvas once the port is bound (it costs ~0.25 s and ~30 MB, and the first
+// scanned receipt would load it anyway), so a server without page images logs a warning at
+// start-up instead of failing quietly on the first scan.
+void checkPageImages();
+
+export default server;
 
 // No `AppType` export. Skybridge's contract is that the handler returns the CHAINED
 // server, so `typeof app` carries the registered tool types for `createClient<AppType>()`

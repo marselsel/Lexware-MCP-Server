@@ -39,6 +39,8 @@ function downloadTools(file: { data: Buffer; contentType: string }) {
 }
 
 const TOOLS = ["get-voucher-file", "download-file", "get-document-file"] as const;
+// Page images need the optional @napi-rs/canvas; without it that test is skipped.
+const canvas = await import("@napi-rs/canvas").catch(() => undefined);
 
 describe.each(TOOLS)("%s returns readable content", (tool) => {
   it("a PDF with a text layer: extracted text + the embedded resource", async () => {
@@ -48,7 +50,7 @@ describe.each(TOOLS)("%s returns readable content", (tool) => {
     expect(res.structuredContent.readable).toMatchObject({ kind: "text" });
   });
 
-  it("a scanned PDF: a page image + the embedded resource", async () => {
+  it.skipIf(!canvas)("a scanned PDF: a page image + the embedded resource", async () => {
     const res = await downloadTools({ data: imageOnlyPdf(), contentType: "application/pdf" })[tool]();
     expect(res.content.filter((c) => c.type === "image")).toEqual([expect.objectContaining({ mimeType: "image/jpeg" })]);
     expect(res.content.at(-1)!.type).toBe("resource");

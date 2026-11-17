@@ -197,11 +197,27 @@ let canvasModule: Promise<Canvas | undefined> | undefined;
 
 /**
  * The optional native canvas, or undefined when it is not installed (an optional
- * dependency: a platform without a prebuilt binary still gets text extraction).
+ * dependency: a platform without a prebuilt binary still gets text extraction). The first
+ * failure is logged once, so a server without page images says so instead of failing quietly.
  */
 function loadCanvas(): Promise<Canvas | undefined> {
-  canvasModule ??= import("@napi-rs/canvas").catch(() => undefined);
+  canvasModule ??= import("@napi-rs/canvas").catch((err: unknown) => {
+    console.error(
+      "[lexware-mcp] WARNING: @napi-rs/canvas could not be loaded, so the download tools cannot render " +
+        "scanned PDF pages or downscale images; they return text and notes only. Install the optional " +
+        `dependency (npm install without --omit=optional) on a platform it ships a binary for. (${errorMessage(err)})`,
+    );
+    return undefined;
+  });
   return canvasModule;
+}
+
+/**
+ * Load the canvas now, so a missing one is reported when the server starts rather than with
+ * the first scanned receipt. Returns whether page images are available.
+ */
+export async function checkPageImages(): Promise<boolean> {
+  return (await loadCanvas()) !== undefined;
 }
 
 /**
