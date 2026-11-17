@@ -20,11 +20,13 @@
  * cannot read still downloads, with a note instead of the readable blocks.
  *
  * Independent of Skybridge, like the rest of src/tools. The PDF and canvas libraries load on
- * first use, so a server that never downloads a file pays nothing for them at start-up.
+ * first use, so a server that never downloads a file pays nothing for them at start-up; at
+ * start-up the server only checks that the canvas is installed (resolved, not loaded).
  */
 
 import { z } from "zod";
-import { type PageLayout, pageLayout } from "./pdf-page-layout.js";
+import { createRequire } from "node:module";
+import { nonWhitespaceLength, type PageLayout, pageLayout } from "./pdf-page-layout.js";
 import { BudgetExceeded, Deadline, runWithin, Semaphore, settleWithin } from "./render-budget.js";
 
 /** How a download tool returns the file. */
@@ -242,9 +244,6 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function nonWhitespaceLength(s: string): number {
-  return Array.from(s.replace(/\s/g, "")).length;
-}
 
 type Canvas = typeof import("@napi-rs/canvas");
 let canvasModule: Promise<Canvas | undefined> | undefined;
@@ -267,11 +266,39 @@ function loadCanvas(): Promise<Canvas | undefined> {
 }
 
 /**
- * Load the canvas now, so a missing one is reported when the server starts rather than with
- * the first scanned receipt. Returns whether page images are available.
+ * Load the canvas and say whether page images work: loads the native module, so it is for
+ * checks (scripts/check-page-images.mjs in CI), not for start-up.
  */
 export async function checkPageImages(): Promise<boolean> {
   return (await loadCanvas()) !== undefined;
+}
+
+/**
+ * Whether @napi-rs/canvas and a native binary for this platform are installed — resolved,
+ * not loaded: loading costs ~0.25 s and ~30 MB, which only the first scanned page should pay.
+ * The server checks this at start-up to warn early; a binary that is there but fails to load
+ * is reported (once) on first use.
+ */
+export function pageImagesInstalled(
+  resolve: (id: string, from: string) => string = (id, from) => createRequire(from).resolve(id),
+): boolean {
+  let main: string;
+  try {
+    main = resolve("@napi-rs/canvas", import.meta.url);
+  } catch {
+    return false;
+  }
+  // The binary is a per-platform optional dependency of the canvas package, e.g.
+  // @napi-rs/canvas-linux-x64-gnu: resolve it from the canvas package, where npm put it.
+  const base = `@napi-rs/canvas-${process.platform}-${process.arch}`;
+  return ["", "-gnu", "-musl", "-msvc", "-gnueabihf"].some((abi) => {
+    try {
+      resolve(`${base}${abi}/package.json`, main);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pageLayout } from "../src/tools/pdf-page-layout.js";
+import { nonWhitespaceLength, pageLayout } from "../src/tools/pdf-page-layout.js";
 
 // A stand-in for pdf.js' OPS table: pageLayout only compares the numbers.
 const OPS = Object.fromEntries(
@@ -89,7 +89,7 @@ describe("pageLayout", () => {
     expect(layout.imageCoverage).toBe(0);
   });
 
-  it("separates invisible (OCR) text from visible glyphs, and counts path operations", () => {
+  it("counts invisible (OCR) text but not visible text, and counts path operations", () => {
     const glyphs = (s: string) => Array.from(s, (unicode) => ({ unicode, isSpace: unicode === " " }));
     const layout = pageLayout(
       opList([
@@ -105,6 +105,12 @@ describe("pageLayout", () => {
       OPS,
       A4,
     );
-    expect(layout).toMatchObject({ invisibleChars: 7, visibleGlyphs: 14, pathOps: 2 });
+    expect(layout).toEqual({ imageCoverage: 0, invisibleChars: 7, pathOps: 2 });
+  });
+});
+
+describe("nonWhitespaceLength", () => {
+  it("counts code points that are not whitespace", () => {
+    expect(nonWhitespaceLength(" a\tb\n€ 😀 ")).toBe(4);
   });
 });

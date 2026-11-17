@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   configureFileRendering,
   imageDimensions,
+  pageImagesInstalled,
   READABLE_LIMITS,
   readableContent,
   type ReadableBlock,
@@ -370,6 +371,12 @@ describe("readableContent: image attachments", () => {
     expect(blocks[0]).toMatchObject({ type: "image", mimeType: "image/jpeg" });
     expect(summary.note).toBe("Downscaled from 3000×2000 to 1897×1264.");
     expect(1897 * 1264).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
+  });
+});
+
+describe("pageImagesInstalled", () => {
+  it.skipIf(!canvas)("finds the installed canvas and its platform binary without loading them", () => {
+    expect(pageImagesInstalled()).toBe(true);
   });
 });
 

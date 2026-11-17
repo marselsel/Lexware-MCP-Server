@@ -6,7 +6,7 @@ vi.mock("@napi-rs/canvas", () => {
   throw new Error("Cannot find module '@napi-rs/canvas-linux-x64-gnu'");
 });
 
-const { checkPageImages, readableContent } = await import("../src/tools/file-content.js");
+const { checkPageImages, pageImagesInstalled, readableContent } = await import("../src/tools/file-content.js");
 const { fixturePdf, TINY_PNG } = await import("./fixtures/pdf.js");
 const { binaryResult } = await import("../src/tools/shared.js");
 
@@ -19,6 +19,19 @@ describe("without @napi-rs/canvas", () => {
     expect(log).toHaveBeenCalledTimes(1);
     expect(log.mock.calls[0]![0]).toMatch(/^\[lexware-mcp\] WARNING: @napi-rs\/canvas could not be loaded/);
     log.mockRestore();
+  });
+
+  it("is reported missing by the start-up check, without loading anything", () => {
+    const missing = (id: string) => {
+      throw new Error(`Cannot find module '${id}'`);
+    };
+    expect(pageImagesInstalled(missing)).toBe(false);
+    // The package without a binary for this platform counts as missing too.
+    const noBinary = (id: string) => {
+      if (id === "@napi-rs/canvas") return "/node_modules/@napi-rs/canvas/index.js";
+      throw new Error(`Cannot find module '${id}'`);
+    };
+    expect(pageImagesInstalled(noBinary)).toBe(false);
   });
 
   it("still returns the text, and a note instead of the page image", async () => {

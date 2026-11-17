@@ -22,8 +22,6 @@ export interface PageLayout {
   invisibleChars: number;
   /** Path-construction operations: table rules and logos, or text converted to outlines. */
   pathOps: number;
-  /** Glyphs drawn visibly, with or without a Unicode mapping (a Type 3 font may have none). */
-  visibleGlyphs: number;
 }
 
 type Matrix = readonly [number, number, number, number, number, number];
@@ -74,7 +72,8 @@ function coverage(boxes: Box[], view: ArrayLike<number>): number {
   return n / (GRID * GRID);
 }
 
-function nonWhitespaceLength(s: string): number {
+/** Characters in `s` that are not whitespace, counted as code points. */
+export function nonWhitespaceLength(s: string): number {
   return Array.from(s.replace(/\s/g, "")).length;
 }
 
@@ -91,7 +90,6 @@ export function pageLayout(opList: OperatorList, OPS: Record<string, number>, vi
   const boxes: Box[] = [];
   let invisibleChars = 0;
   let pathOps = 0;
-  let visibleGlyphs = 0;
 
   const image = (m: Matrix) => {
     if (!softMask.includes(true)) boxes.push(unitSquareBox(m));
@@ -134,16 +132,15 @@ export function pageLayout(opList: OperatorList, OPS: Record<string, number>, vi
       case OPS.endGroup:
         softMask.pop();
         break;
-      case OPS.showText: {
-        const invisible = state.textMode === 3 || state.textMode === 7;
-        for (const glyph of (args[0] ?? []) as unknown[]) {
-          if (typeof glyph !== "object" || glyph === null) continue; // a number is spacing
-          const unicode = (glyph as { unicode?: unknown }).unicode;
-          if (invisible) invisibleChars += typeof unicode === "string" ? nonWhitespaceLength(unicode) : 0;
-          else if (!(glyph as { isSpace?: boolean }).isSpace) visibleGlyphs++;
+      case OPS.showText:
+        if (state.textMode === 3 || state.textMode === 7) {
+          for (const glyph of (args[0] ?? []) as unknown[]) {
+            if (typeof glyph !== "object" || glyph === null) continue; // a number is spacing
+            const unicode = (glyph as { unicode?: unknown }).unicode;
+            if (typeof unicode === "string") invisibleChars += nonWhitespaceLength(unicode);
+          }
         }
         break;
-      }
       case OPS.constructPath:
         pathOps++;
         break;
@@ -186,5 +183,5 @@ export function pageLayout(opList: OperatorList, OPS: Record<string, number>, vi
     }
   }
 
-  return { imageCoverage: coverage(boxes, view), invisibleChars, pathOps, visibleGlyphs };
+  return { imageCoverage: coverage(boxes, view), invisibleChars, pathOps };
 }

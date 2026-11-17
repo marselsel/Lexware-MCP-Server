@@ -5,7 +5,7 @@ import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { buildServerInstructions } from "./instructions.js";
 import { LexwareClient } from "./lexware/client.js";
 import { advertisedScopes, buildOAuthMetadata, oauthGate, protectedResourceMetadataUrl } from "./oauth.js";
-import { checkPageImages, configureFileRendering } from "./tools/file-content.js";
+import { configureFileRendering, pageImagesInstalled } from "./tools/file-content.js";
 import { createFinalizeConfirmation } from "./tools/finalize-confirmation.js";
 import { registerTools } from "./tools/index.js";
 import { INERT_APP_JSON } from "./server-body-parsing.js";
@@ -193,6 +193,15 @@ if (config.auth.mode === "oauth" && config.auth.allowedEmailDomains.length === 0
       "authenticate with your issuer can reach this server. Set OAUTH_ALLOWED_EMAIL_DOMAINS to restrict access.",
   );
 }
+// The canvas behind page images is only loaded with the first scan (~0.25 s, ~30 MB); here it
+// is only resolved, so a deployment without it says so at start-up rather than on that scan.
+if (!pageImagesInstalled()) {
+  console.error(
+    "[lexware-mcp] WARNING: @napi-rs/canvas (an optional dependency) is not installed for this platform, " +
+      "so the download tools cannot render scanned PDF pages or downscale images: they return text, and " +
+      "list the pages that need an image as missing. Install dependencies without --omit=optional.",
+  );
+}
 if (config.auth.mode === "none") {
   console.error(
     "[lexware-mcp] WARNING: /mcp is UNAUTHENTICATED (MCP_ALLOW_UNAUTHENTICATED=true). Anyone who can reach " +
@@ -201,14 +210,7 @@ if (config.auth.mode === "none") {
   );
 }
 
-const server = await app.run();
-
-// Load the optional canvas once the port is bound (it costs ~0.25 s and ~30 MB, and the first
-// scanned receipt would load it anyway), so a server without page images logs a warning at
-// start-up instead of failing quietly on the first scan.
-void checkPageImages();
-
-export default server;
+export default await app.run();
 
 // No `AppType` export. Skybridge's contract is that the handler returns the CHAINED
 // server, so `typeof app` carries the registered tool types for `createClient<AppType>()`
