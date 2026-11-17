@@ -643,33 +643,42 @@ async function splitTall(
   return blocks;
 }
 
+/** What the image dictionaries in a PDF say about its images (see {@link pdfImageSizes}). */
+export interface PdfImageSizes {
+  /** The largest image whose size could be read. */
+  largest?: { width: number; height: number };
+  /** Some image's size could not be read (e.g. `/Width 12 0 R`): it may be any size. */
+  unknown: boolean;
+}
+
 /**
- * The largest image in a PDF, read from the image dictionaries in the raw bytes, before
- * pdf.js decodes anything. An image XObject is a stream, and a stream's dictionary is always
- * a direct object in the file body (never inside a compressed object stream), so its /Width
- * and /Height are there to read. `unknown` when an image's size is not a plain number.
+ * The image sizes in a PDF, read from the image dictionaries in the raw bytes, before pdf.js
+ * decodes anything. An image XObject is a stream, and a stream's dictionary is always a direct
+ * object in the file body (never inside a compressed object stream), so its /Width and
+ * /Height are there to read — unless they are indirect references, which make the size
+ * `unknown`. An unknown size stays on record whatever else is found: a small logo next to it
+ * says nothing about how large it is.
  */
-export function largestPdfImage(data: Buffer): { width: number; height: number } | "unknown" | undefined {
+export function pdfImageSizes(data: Buffer): PdfImageSizes {
   const raw = data.toString("latin1");
-  let largest: { width: number; height: number } | "unknown" | undefined;
+  const sizes: PdfImageSizes = { unknown: false };
   for (const match of raw.matchAll(/\/Subtype\s*\/Image\b/g)) {
     // The dictionary around the match: back to its "obj", forward to its "stream".
     const start = Math.max(raw.lastIndexOf(" obj", match.index), match.index - 2048, 0);
     const streamAt = raw.indexOf("stream", match.index);
     const end = Math.min(streamAt < 0 ? raw.length : streamAt, match.index + 2048);
     const dict = raw.slice(start, end);
-    const width = /\/Width\s+(\d+)(?!\s+\d+\s+R)/.exec(dict);
-    const height = /\/Height\s+(\d+)(?!\s+\d+\s+R)/.exec(dict);
+    // \b before the lookahead: without it, "/Width 12 0 R" backtracks to read a width of 1.
+    const width = /\/Width\s+(\d+)\b(?!\s+\d+\s+R)/.exec(dict);
+    const height = /\/Height\s+(\d+)\b(?!\s+\d+\s+R)/.exec(dict);
     if (!width || !height) {
-      largest ??= "unknown";
+      sizes.unknown = true;
       continue;
     }
     const size = { width: Number(width[1]), height: Number(height[1]) };
-    if (largest === undefined || largest === "unknown" || size.width * size.height > largest.width * largest.height) {
-      largest = size;
-    }
+    if (!sizes.largest || size.width * size.height > sizes.largest.width * sizes.largest.height) sizes.largest = size;
   }
-  return largest;
+  return sizes;
 }
 
 async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
@@ -677,13 +686,14 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
   const { getDocumentProxy, getResolvedPDFJS, registerImageDecoders, renderPageAsImage } = await import("unpdf");
   // JBIG2 / JPEG 2000 decoders: scanners write those, and the layout pass decodes images.
   registerImageDecoders();
-  const largest = largestPdfImage(data);
-  const largestPixels = largest === undefined ? 0 : largest === "unknown" ? Infinity : largest.width * largest.height;
-  const heavy = largestPixels >= READABLE_LIMITS.heavyImagePixels;
+  const { largest, unknown } = pdfImageSizes(data);
+  const largestPixels = largest ? largest.width * largest.height : 0;
+  // An image of unknown size may be any size: the file counts as heavy.
+  const heavy = unknown || largestPixels >= READABLE_LIMITS.heavyImagePixels;
   // pdf.js leaves an image over the decode limit out of the render, so its page would come out
   // blank: pages that might hold it get a layout first, and are reported instead of rendered.
-  const oversized = largest !== undefined && largest !== "unknown" && largestPixels > settings.maxDecodePixels;
-  const file = { hasImages: largest !== undefined };
+  const oversized = largestPixels > settings.maxDecodePixels;
+  const file = { hasImages: unknown || largest !== undefined };
   // A copy: PDF.js may take over (detach) the buffer it is handed, and the caller still
   // needs the original bytes for the embedded resource.
   const pdf = await getDocumentProxy(new Uint8Array(data), {
@@ -788,8 +798,9 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
           info.ocr = info.chars > 0 && layout.invisibleChars >= info.chars / 2;
           info.render = renderReason(info, file, layout, page.view);
           const visible = Math.max(0, info.chars - layout.invisibleChars);
-          if (oversized && layout.imageCoverage === 0 && sparseText(visible, page.view)) {
-            // Little text and no image that pdf.js kept: the over-limit image is this page's.
+          if (oversized && layout.imageCoverage < READABLE_LIMITS.scanMinImageCoverage && sparseText(visible, page.view)) {
+            // Little text and no large image that pdf.js kept (a logo may be left): the
+            // over-limit image is this page's.
             info.oversized = true;
             info.render ??= "scan";
             return;
@@ -867,8 +878,8 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     // tools then attach the raw file whatever `output` says, since that is where its content is.
     const missing = pdfPages.filter((p) => p.render && !p.attached);
     const tooLarge = missing.filter((p) => p.oversized).map((p) => p.n);
-    if (oversized) {
-      const sized = largest as { width: number; height: number };
+    if (oversized && largest) {
+      const sized = largest;
       notes.push(
         `The PDF contains an image of ${sized.width}×${sized.height} px, more than this server decodes ` +
           `(${settings.maxDecodePixels / 1_000_000} MP)` +

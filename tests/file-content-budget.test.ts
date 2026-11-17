@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  largestPdfImage,
+  pdfImageSizes,
   READABLE_LIMITS,
   readableContent,
   renderScale,
@@ -217,15 +217,25 @@ describe("render size", () => {
   });
 });
 
-describe("largestPdfImage", () => {
+describe("pdfImageSizes", () => {
+  const imageObject = (n: number, dict: string) => `${n} 0 obj\n<< /Type /XObject /Subtype /Image ${dict} >>\nstream\nxx\nendstream\nendobj\n`;
+
   it("reads the largest image's size from the raw file", () => {
-    expect(largestPdfImage(heavyPdf())).toEqual({ width: 2000, height: 1000 });
-    expect(largestPdfImage(fixturePdf([["text only"]]))).toBeUndefined();
+    expect(pdfImageSizes(heavyPdf())).toEqual({ largest: { width: 2000, height: 1000 }, unknown: false });
+    expect(pdfImageSizes(fixturePdf([["text only"]]))).toEqual({ unknown: false });
   });
 
-  it("reports an image whose size is an indirect reference as unknown", () => {
-    const pdf = Buffer.from("%PDF-1.4\n4 0 obj\n<< /Type /XObject /Subtype /Image /Width 7 0 R /Height 7 0 R >>\nstream\n");
-    expect(largestPdfImage(pdf)).toBe("unknown");
+  it("reports a size given as an indirect reference as unknown, not as its first digit", () => {
+    const pdf = Buffer.from(`%PDF-1.4\n${imageObject(4, "/Width 12 0 R /Height 7 0 R")}`, "latin1");
+    expect(pdfImageSizes(pdf)).toEqual({ unknown: true });
+  });
+
+  it("keeps an unknown size on record next to a known small one", () => {
+    const pdf = Buffer.from(
+      `%PDF-1.4\n${imageObject(4, "/Width 12 0 R /Height 13 0 R")}${imageObject(5, "/Width 120 /Height 40")}`,
+      "latin1",
+    );
+    expect(pdfImageSizes(pdf)).toEqual({ largest: { width: 120, height: 40 }, unknown: true });
   });
 });
 
@@ -322,6 +332,8 @@ describe.skipIf(!canvas)("rendering cost", () => {
     const pagesWithOversized = [
       { image: true, imageKind: "oversized" },
       { image: true, imageKind: "oversized", lines: ["Scanned with CamScanner"] },
+      // A small logo pdf.js does keep must not make the page count as rendered.
+      { image: true, imageKind: "oversized", logo: [450, 760, 100, 50] },
     ] as const;
     for (const page of pagesWithOversized) {
       const { summary } = await readableContent(fixturePdf([INVOICE_PAGE, page]), "application/pdf");

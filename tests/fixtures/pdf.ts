@@ -62,6 +62,8 @@ export type FixturePage =
       imageKind?: "small" | "heavy" | "oversized";
       /** Page size in points (default A4). */
       size?: [number, number];
+      /** Also draw the small image as a logo in this box [x, y, w, h]. */
+      logo?: [number, number, number, number];
     };
 
 /** A grey checkerboard, standing in for a scanned receipt. */
@@ -92,7 +94,8 @@ export function fixturePdf(pages: FixturePage[]): Buffer {
   // 7 the heavy image, 8 the oversized image, then (page, content) pairs.
   const pageIds = pages.map((_, i) => 9 + i * 2);
   const imageOf = (p: FixturePage) => (p === "scan" ? "small" : Array.isArray(p) || !p.image ? undefined : (p.imageKind ?? "small"));
-  const uses = (kind: "small" | "heavy" | "oversized") => pages.some((p) => imageOf(p) === kind);
+  const uses = (kind: "small" | "heavy" | "oversized") =>
+    pages.some((p) => imageOf(p) === kind || (kind === "small" && typeof p === "object" && !Array.isArray(p) && p.logo));
   const objects: (string | Buffer)[] = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`,
@@ -120,8 +123,10 @@ export function fixturePdf(pages: FixturePage[]): Buffer {
     const [x, y, w, h] = page.image === true ? [0, 0, pw, ph] : (page.image ?? [0, 0, 0, 0]);
     const font = page.font === "nul-hyphen" ? "/F2" : "/F1";
     const im = { small: "/Im1", heavy: "/Im2", oversized: "/Im3" }[("imageKind" in page && page.imageKind) || "small"];
+    const logo = "logo" in page ? page.logo : undefined;
     const ops = [
       page.image ? `q ${w} 0 0 ${h} ${x} ${y} cm ${im} Do Q` : "",
+      logo ? `q ${logo[2]} 0 0 ${logo[3]} ${logo[0]} ${logo[1]} cm /Im1 Do Q` : "",
       ...(page.lines ?? []).map(
         (l, j) => `BT ${page.invisible ? "3 Tr " : ""}${font} 12 Tf 50 ${780 - j * 18} Td (${lit(l)}) Tj ET`,
       ),
