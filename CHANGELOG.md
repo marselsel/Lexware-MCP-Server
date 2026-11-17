@@ -30,14 +30,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - The download tools (`get-voucher-file`, `download-file`, `get-document-file`) now return the file in
   a form the model can read on every client, not only as an embedded resource: a PDF's extracted text
-  (one section per page), pages without a text layer (scans, photos saved as PDF) rendered to an
-  image, image attachments as image blocks, and XML as text. claude.ai and Cowork never show a PDF
-  blob to the model, so receipts fetched there were unreadable ([#71](https://github.com/marselsel/Lexware-MCP-Server/issues/71)). The embedded resource is still
-  returned, so Claude Code works as before. A new `output` parameter picks `auto` (both, default),
-  `readable` (text/images only, smaller) or `resource` (only the raw file, the old shape). Pages
-  read, pages rendered, render size and text length are capped. One helper serves all three tools.
-  Uses `unpdf` (text) and the optional `@napi-rs/canvas` (page images), both loaded on first use, so
-  start-up is unaffected; without the canvas, scans come back with a note instead of an image.
+  (one section per page), pages that are mostly an image (scans and photos saved as PDF, also when
+  they carry a stamp or a footer line, and OCR'd scans) rendered to an image, image attachments as
+  image blocks, and XML as text. claude.ai and Cowork never show a PDF blob to the model, so receipts
+  fetched there were unreadable ([#71](https://github.com/marselsel/Lexware-MCP-Server/issues/71)).
+  Characters pdf.js cannot decode (Stripe invoices map hyphens, minus signs and dashes to U+0000)
+  come back as U+FFFD with a note, plus the page image to read them from. A new `output` parameter
+  picks `auto` (default: readable blocks, plus the raw file as an embedded resource up to 1.5 MB, so
+  Claude Code works as before for ordinary invoices), `readable` (text/images only) or `resource`
+  (only the raw file, the old shape). Pages read (30), text length (30,000 characters), page images
+  (3, at most 2.4 MP each) and decoded image size (50 MP) are capped; heavy pages render one at a
+  time across requests, within a 20 s budget per call. One helper serves all three tools. Uses
+  `unpdf` (text) and the optional `@napi-rs/canvas` (page images); without the canvas, a warning is
+  logged at start-up and scans come back with a note instead of an image. Deploy with
+  `--memory=1Gi` on Cloud Run (see `docs/cloud-run.md`).
 - Every tool has a human-readable `title` (e.g. "Issue invoice (finalize, irreversible)"), which
   clients show instead of the tool name. It is set both as the top-level `title` and as
   `annotations.title`: the spec reads the first, Anthropic's directory checklist asks for the second.

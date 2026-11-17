@@ -1,7 +1,7 @@
 import type { LexwareClient } from "../lexware/client.js";
 import { isNotFound } from "../lexware/errors.js";
 import type { Paged } from "../lexware/types.js";
-import { type FileOutput, readableContent } from "./file-content.js";
+import { AUTO_RESOURCE_MAX_BYTES, type FileOutput, readableContent } from "./file-content.js";
 
 /** Default page size for list tools. */
 export const DEFAULT_PAGE_SIZE = 25;
@@ -94,7 +94,9 @@ function embeddedResourceBlock(uri: string, mimeType: string, data: Buffer) {
  * Both forms, because clients differ: Claude Code saves the embedded resource to a file the
  * model can open, while claude.ai / Cowork never show a PDF blob to the model at all — for
  * them the readable blocks are the only way in. `output` narrows it to one of the two
- * (see {@link fileOutputParam}).
+ * (see {@link fileOutputParam}). In "auto" the blob is attached only up to
+ * {@link AUTO_RESOURCE_MAX_BYTES}, so a 5 MB phone photo does not make a 7 MB response for
+ * a client that drops it anyway; a note says how to get it.
  */
 export async function binaryResult(opts: {
   uri: string;
@@ -111,11 +113,30 @@ export async function binaryResult(opts: {
   }
   const readable = await readableContent(opts.data, opts.contentType);
   // "readable" drops the blob, unless nothing readable came out of the file: then the blob
-  // is all there is, and returning neither would lose the file entirely.
-  const keepResource = output === "auto" || readable.summary.kind === "none";
+  // is all there is, and returning neither would lose the file entirely. "auto" keeps it up
+  // to the size cap, and past it says how to get it.
+  const nothingReadable = readable.summary.kind === "none";
+  const keepResource =
+    nothingReadable || (output === "auto" && opts.data.length <= AUTO_RESOURCE_MAX_BYTES);
+  const omitted = output === "auto" && !keepResource;
+  const omittedNote = {
+    type: "text" as const,
+    text:
+      `[The original file (${(opts.data.length / 1_000_000).toFixed(1)} MB) is not attached: "auto" only ` +
+      `attaches files up to ${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. Call again with output="resource" to get it.]`,
+  };
   return {
-    structuredContent: { ...opts.structuredContent, readable: readable.summary },
-    content: [...text(opts.message), ...readable.blocks, ...(keepResource ? [resource] : [])],
+    structuredContent: {
+      ...opts.structuredContent,
+      readable: readable.summary,
+      ...(omitted ? { resourceOmitted: true } : {}),
+    },
+    content: [
+      ...text(opts.message),
+      ...readable.blocks,
+      ...(omitted ? [omittedNote] : []),
+      ...(keepResource ? [resource] : []),
+    ],
   };
 }
 

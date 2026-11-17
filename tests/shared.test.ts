@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LexwareClient } from "../src/lexware/client.js";
 import { LexwareApiError } from "../src/lexware/errors.js";
 import type { Paged } from "../src/lexware/types.js";
+import { AUTO_RESOURCE_MAX_BYTES } from "../src/tools/file-content.js";
 import {
   binaryResult,
   decodeBase64Strict,
@@ -246,6 +247,36 @@ describe("binaryResult", () => {
     const data = Buffer.from("PK\x03\x04 a zip");
     const res = await binaryResult({ ...opts(data, "application/zip"), output: "readable" });
     expect(res.content.at(-1)).toEqual(resourceOf(data, "application/zip"));
+  });
+
+  it('"auto" attaches the raw file only up to AUTO_RESOURCE_MAX_BYTES, and says how to get a larger one', async () => {
+    // An e-invoice XML just over the cap: readable as text, so the blob is left out.
+    const line = "<Line><ID>4711</ID><Amount currencyID=\"EUR\">12.50</Amount></Line>\n";
+    const big = Buffer.from(line.repeat(Math.ceil((AUTO_RESOURCE_MAX_BYTES + 1) / line.length)));
+    const res = await binaryResult(opts(big, "application/xml"));
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text", "text", "text"]);
+    expect((res.content.at(-1) as { text: string }).text).toBe(
+      `[The original file (${(big.length / 1e6).toFixed(1)} MB) is not attached: "auto" only attaches files up to 1.5 MB. ` +
+        'Call again with output="resource" to get it.]',
+    );
+    expect(res.structuredContent).toMatchObject({ resourceOmitted: true });
+
+    // At the cap it is still attached.
+    const atCap = big.subarray(0, AUTO_RESOURCE_MAX_BYTES);
+    const kept = await binaryResult(opts(atCap, "application/xml"));
+    expect(kept.content.at(-1)).toEqual(resourceOf(atCap, "application/xml"));
+    expect(kept.structuredContent).not.toHaveProperty("resourceOmitted");
+
+    // output="resource" returns it at any size.
+    const raw = await binaryResult({ ...opts(big, "application/xml"), output: "resource" });
+    expect(raw.content.at(-1)).toEqual(resourceOf(big, "application/xml"));
+  });
+
+  it('"auto" keeps a large file it cannot read: the blob is all there is', async () => {
+    const zip = Buffer.alloc(AUTO_RESOURCE_MAX_BYTES + 1);
+    zip.write("PK\x03\x04", 0, "latin1");
+    const res = await binaryResult(opts(zip, "application/zip"));
+    expect(res.content.at(-1)).toEqual(resourceOf(zip, "application/zip"));
   });
 
   it("still downloads a file it cannot parse, with a note instead of the text", async () => {

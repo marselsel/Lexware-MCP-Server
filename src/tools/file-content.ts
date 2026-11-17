@@ -31,15 +31,23 @@ import { BudgetExceeded, Deadline, Semaphore } from "./render-budget.js";
 export const FILE_OUTPUT_MODES = ["auto", "resource", "readable"] as const;
 export type FileOutput = (typeof FILE_OUTPUT_MODES)[number];
 
+/**
+ * The largest file `output="auto"` also attaches as an embedded resource, in bytes (~2 MB as
+ * base64). Born-digital invoices are 20–300 KB, so they keep the blob; above this a file is
+ * almost always a photo or a scan, whose readable form is already its page images.
+ */
+export const AUTO_RESOURCE_MAX_BYTES = 1_500_000;
+
 /** The `output` parameter, shared by every download tool. */
 export const fileOutputParam = z
   .enum(FILE_OUTPUT_MODES)
   .default("auto")
   .describe(
     'How to return the file. "auto" (default): the readable form — extracted PDF text, page images ' +
-      'for scanned pages, the image itself — plus the raw file as an embedded resource. "readable": ' +
-      'only the readable form (smaller; the raw file is still sent when nothing readable could be ' +
-      'extracted). "resource": only the raw file, for clients that save embedded resources to disk.',
+      'for scanned pages, the image itself — plus the raw file as an embedded resource if it is at ' +
+      `most ${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. "readable": only the readable form (the raw ` +
+      'file is still sent when nothing readable could be extracted). "resource": only the raw file, ' +
+      'at any size, for clients that save embedded resources to disk.',
   );
 
 type TextBlock = { type: "text"; text: string };
