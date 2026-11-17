@@ -1,8 +1,8 @@
-import { createCanvas } from "@napi-rs/canvas";
+import { createCanvas, loadImage } from "@napi-rs/canvas";
 import { describe, expect, it } from "vitest";
-import { READABLE_LIMITS, readableContent, type ReadableBlock } from "../src/tools/file-content.js";
+import { imageDimensions, READABLE_LIMITS, readableContent, type ReadableBlock } from "../src/tools/file-content.js";
 import { binaryResult, withJsonText } from "../src/tools/shared.js";
-import { fixturePdf, imageOnlyPdf, textPdf, TINY_PNG } from "./fixtures/pdf.js";
+import { fixturePdf, imageOnlyPdf, pngHeader, textPdf, TINY_JPEG, TINY_PNG } from "./fixtures/pdf.js";
 
 const texts = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 const images = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "image");
@@ -44,16 +44,21 @@ describe("readableContent: PDF with a text layer", () => {
     expect(summary.kind).toBe("text");
   });
 
-  it("truncates very long text with a note, and reads at most maxTextPages pages", async () => {
+  it("truncates very long text, reporting the last complete page, and reads at most maxTextPages pages", async () => {
+    // 40 lines of 65 characters: about 2,650 characters a page, so the cut falls in page 12.
     const line = "Position 0001 Beratungsleistung November 2026 1.234,56 EUR netto";
     const pages = Array.from({ length: READABLE_LIMITS.maxTextPages + 5 }, () => Array.from({ length: 40 }, () => line));
     const { blocks, summary } = await readableContent(textPdf(pages), "application/pdf");
     const [text, ...notes] = texts(blocks);
-    expect(text!.length).toBeLessThanOrEqual(READABLE_LIMITS.maxTextChars);
-    expect(notes.join(" ")).toMatch(/Text truncated after 30000 characters/);
+    expect(text!.length).toBe(READABLE_LIMITS.maxTextChars);
+    expect(text).toContain("--- Page 12 of 35 ---");
+    expect(text).not.toContain("--- Page 13 of 35 ---");
+    expect(notes[0]).toBe(
+      '[Text truncated after 30000 characters: pages 1–11 complete, page 12 cut off, pages 13–30 not shown. ' +
+        'The full file is available with output="resource".]',
+    );
     expect(notes.join(" ")).toMatch(/Only pages 1–30 of the 35-page PDF are read/);
-    expect(summary.truncated).toBe(true);
-    expect(summary.textPages).toHaveLength(READABLE_LIMITS.maxTextPages);
+    expect(summary).toMatchObject({ truncated: true, textPages: Array.from({ length: 11 }, (_, i) => i + 1), partialTextPage: 12 });
   });
 });
 
@@ -193,9 +198,49 @@ describe("readableContent: image attachments", () => {
   });
 
   it("returns a JPEG as-is", async () => {
-    const jpeg = await createCanvas(20, 10).encode("jpeg", 80);
-    const { blocks } = await readableContent(jpeg, "image/jpeg");
-    expect(blocks).toEqual([{ type: "image", data: jpeg.toString("base64"), mimeType: "image/jpeg" }]);
+    const { blocks } = await readableContent(TINY_JPEG, "image/jpeg");
+    expect(blocks).toEqual([{ type: "image", data: TINY_JPEG.toString("base64"), mimeType: "image/jpeg" }]);
+  });
+
+  it("downscales an image that is small in bytes but large in pixels, onto white", async () => {
+    // A 2550×3300 scan (8.4 MP) on a transparent background compresses to well under 1.5 MB.
+    const scan = createCanvas(2550, 3300);
+    const ctx = scan.getContext("2d");
+    ctx.fillStyle = "#000";
+    ctx.font = "60px sans-serif";
+    for (let y = 200; y < 3200; y += 120) ctx.fillText("Artikel 4711 Menge 1 Preis 12,50 EUR", 150, y);
+    const png = await scan.encode("png");
+    expect(png.length).toBeLessThan(READABLE_LIMITS.maxImageBytes);
+
+    const { blocks, summary } = await readableContent(png, "image/png");
+    expect(blocks).toEqual([expect.objectContaining({ type: "image", mimeType: "image/jpeg" })]);
+    const out = await loadImage(Buffer.from((blocks[0] as { data: string }).data, "base64"));
+    expect(out.width * out.height).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
+    expect(summary.note).toBe(`Downscaled from 2550×3300 to ${out.width}×${out.height}.`);
+    // Transparency became white, not black.
+    const corner = createCanvas(1, 1);
+    corner.getContext("2d").drawImage(out, 0, 0, 1, 1, 0, 0, 1, 1);
+    expect(corner.getContext("2d").getImageData(0, 0, 1, 1).data[0]).toBeGreaterThan(240);
+  });
+
+  it("does not decode an image over the decode limit", async () => {
+    const { blocks, summary } = await readableContent(pngHeader(9000, 6000), "image/png");
+    expect(texts(blocks)[0]).toMatch(/The image is 9000×6000 px, more than this server decodes \(50 MP\)/);
+    expect(summary.kind).toBe("none");
+  });
+
+  it("reads image sizes from their headers", () => {
+    expect(imageDimensions(pngHeader(2550, 3300), "image/png")).toEqual({ width: 2550, height: 3300 });
+    expect(imageDimensions(TINY_JPEG, "image/jpeg")).toEqual({ width: 20, height: 10 });
+    const gif = Buffer.from("GIF89a\x64\x00\x32\x00", "latin1");
+    expect(imageDimensions(gif, "image/gif")).toEqual({ width: 100, height: 50 });
+    const vp8x = Buffer.alloc(30);
+    vp8x.write("RIFF", 0, "latin1");
+    vp8x.write("WEBPVP8X", 8, "latin1");
+    vp8x.writeUIntLE(1999, 24, 3);
+    vp8x.writeUIntLE(2999, 27, 3);
+    expect(imageDimensions(vp8x, "image/webp")).toEqual({ width: 2000, height: 3000 });
+    expect(imageDimensions(Buffer.from("not an image"), "image/png")).toBeUndefined();
   });
 
   it("sniffs an image served as application/octet-stream", async () => {
@@ -223,6 +268,7 @@ describe("readableContent: image attachments", () => {
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toMatchObject({ type: "image", mimeType: "image/jpeg" });
     expect(summary.note).toBe("Downscaled from 3000×2000 to 1897×1264.");
+    expect(1897 * 1264).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
   });
 });
 

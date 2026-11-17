@@ -102,8 +102,10 @@ export interface ReadableSummary {
   /** What the blocks carry: extracted text, images, both, or nothing usable. */
   kind: "text" | "image" | "text+image" | "none";
   pageCount?: number;
-  /** 1-based pages whose text was returned. */
+  /** 1-based pages whose text was returned in full. */
   textPages?: number[];
+  /** The page whose text was cut off by the text limit, if one was. */
+  partialTextPage?: number;
   /** 1-based pages returned as images. */
   renderedPages?: number[];
   /** True when text or pages were left out because of the limits. */
@@ -225,7 +227,7 @@ export async function readableContent(
   try {
     if (isPdf(data, type)) return await readPdf(data, deadline);
     const imageType = IMAGE_TYPES.has(type) ? type : sniffImageType(data);
-    if (imageType) return await readImage(data, imageType);
+    if (imageType) return await readImage(data, imageType, deadline);
     if (isTextual(type)) return readText(data);
     return { blocks: [], summary: { kind: "none", note: `No readable form for ${type || "this file type"}.` } };
   } catch (err) {
@@ -244,33 +246,105 @@ function readText(data: Buffer): ReadableContent {
   return { blocks, summary: { kind: "text", truncated, ...(note ? { note } : {}) } };
 }
 
+/** Where to get what the readable form leaves out: the blob is not always attached. */
+const FULL_FILE = 'The full file is available with output="resource".';
+
 function truncationNote(): string {
-  return (
-    `[Text truncated after ${READABLE_LIMITS.maxTextChars} characters. ` +
-    `The full file is in the embedded resource (output="resource").]`
-  );
+  return `[Text truncated after ${READABLE_LIMITS.maxTextChars} characters. ${FULL_FILE}]`;
 }
 
-async function readImage(data: Buffer, mimeType: string): Promise<ReadableContent> {
-  if (data.length <= READABLE_LIMITS.maxImageBytes) {
+/**
+ * Width and height from an image file's header, without decoding it (PNG IHDR, JPEG SOF,
+ * GIF logical screen, WebP VP8/VP8L/VP8X). Undefined when the header cannot be read.
+ */
+export function imageDimensions(data: Buffer, mimeType: string): { width: number; height: number } | undefined {
+  try {
+    if (mimeType === "image/png") return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) };
+    if (mimeType === "image/gif") return { width: data.readUInt16LE(6), height: data.readUInt16LE(8) };
+    if (mimeType === "image/webp") {
+      const chunk = data.subarray(12, 16).toString("latin1");
+      if (chunk === "VP8 ") return { width: data.readUInt16LE(26) & 0x3fff, height: data.readUInt16LE(28) & 0x3fff };
+      if (chunk === "VP8X") return { width: 1 + data.readUIntLE(24, 3), height: 1 + data.readUIntLE(27, 3) };
+      if (chunk === "VP8L") {
+        const bits = data.readUInt32LE(21);
+        return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >>> 14) & 0x3fff) };
+      }
+      return undefined;
+    }
+    if (mimeType === "image/jpeg") {
+      let i = 2;
+      while (i + 9 < data.length) {
+        if (data[i] !== 0xff) return undefined;
+        const marker = data[i + 1]!;
+        if (marker === 0xff) {
+          i++; // fill byte
+          continue;
+        }
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { width: data.readUInt16BE(i + 7), height: data.readUInt16BE(i + 5) };
+        }
+        i += marker === 0x01 || (marker >= 0xd0 && marker <= 0xd9) ? 2 : 2 + data.readUInt16BE(i + 2);
+      }
+    }
+  } catch {
+    // A truncated header: fall through.
+  }
+  return undefined;
+}
+
+/** Whether `width`×`height` is within the pixel budget and the long-side cap. */
+function fitsBudget(width: number, height: number): boolean {
+  return width * height <= READABLE_LIMITS.maxImagePixels && Math.max(width, height) <= READABLE_LIMITS.maxImageSide;
+}
+
+/**
+ * An image attachment as an image block. Passed through untouched when it is small in bytes
+ * and in pixels; otherwise decoded once and downscaled into the same pixel budget as a
+ * rendered page (a 2550×3300 scan under 1.5 MB is still 8.4 MP), on a white background (JPEG
+ * has no transparency). A large image waits for the render slot, like a heavy PDF page.
+ */
+async function readImage(data: Buffer, mimeType: string, deadline: Deadline): Promise<ReadableContent> {
+  const size = imageDimensions(data, mimeType);
+  if (data.length <= READABLE_LIMITS.maxImageBytes && size && fitsBudget(size.width, size.height)) {
     return { blocks: [imageBlock(data, mimeType)], summary: { kind: "image" } };
+  }
+  if (size && size.width * size.height > READABLE_LIMITS.maxDecodePixels) {
+    const note =
+      `The image is ${size.width}×${size.height} px, more than this server decodes ` +
+      `(${READABLE_LIMITS.maxDecodePixels / 1_000_000} MP). ${FULL_FILE}`;
+    return { blocks: [textBlock(`[${note}]`)], summary: { kind: "none", note } };
   }
   const canvas = await loadCanvas();
   if (!canvas) {
+    if (data.length <= READABLE_LIMITS.maxImageBytes) {
+      const note = `Returned at its original size: it could not be downscaled. ${NO_CANVAS_NOTE}`;
+      return { blocks: [imageBlock(data, mimeType), textBlock(`[${note}]`)], summary: { kind: "image", note } };
+    }
     const note = `The image (${data.length} bytes) is too large to return inline. ${NO_CANVAS_NOTE}`;
-    return { blocks: [textBlock(note)], summary: { kind: "none", note } };
+    return { blocks: [textBlock(`[${note}]`)], summary: { kind: "none", note } };
   }
-  const image = await canvas.loadImage(data);
-  const scale = Math.min(1, fitScale(image.width, image.height));
-  const width = Math.max(1, Math.floor(image.width * scale));
-  const height = Math.max(1, Math.floor(image.height * scale));
-  const surface = canvas.createCanvas(width, height);
-  surface.getContext("2d").drawImage(image, 0, 0, width, height);
-  const jpeg = await surface.encode("jpeg", 85);
-  return {
-    blocks: [imageBlock(jpeg, "image/jpeg")],
-    summary: { kind: "image", note: `Downscaled from ${image.width}×${image.height} to ${width}×${height}.` },
+  const downscale = async () => {
+    const image = await canvas.loadImage(data);
+    const scale = Math.min(1, fitScale(image.width, image.height));
+    const width = Math.max(1, Math.floor(image.width * scale));
+    const height = Math.max(1, Math.floor(image.height * scale));
+    const surface = canvas.createCanvas(width, height);
+    const ctx = surface.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(image, 0, 0, width, height);
+    const jpeg = await surface.encode("jpeg", 85);
+    const note = width === image.width ? "Re-encoded as JPEG." : `Downscaled from ${image.width}×${image.height} to ${width}×${height}.`;
+    return { blocks: [imageBlock(jpeg, "image/jpeg")], summary: { kind: "image" as const, note } };
   };
+  const heavy = !size || size.width * size.height >= READABLE_LIMITS.heavyImagePixels;
+  try {
+    return await (heavy ? renderSlots.run(() => deadline.race(downscale()), deadline) : deadline.race(downscale()));
+  } catch (err) {
+    if (!(err instanceof BudgetExceeded)) throw err;
+    const note = `The image could not be downscaled in time (the server is busy). Try again. ${FULL_FILE}`;
+    return { blocks: [textBlock(`[${note}]`)], summary: { kind: "none", note } };
+  }
 }
 
 /** A4 in PDF points, the reference area for the "little text" threshold. */
@@ -367,7 +441,7 @@ function pageNotes(pdfPages: PdfPage[]): string[] {
         (shown.length > 0
           ? `; ${pages(shown).label.toLowerCase()} ${pages(shown).is} attached as an image — read those characters ` +
             `(often a hyphen in an invoice number, a minus sign or a dash) from it.`
-          : ". Check those characters against the original file (output=\"resource\")."),
+          : `. Check those characters against the full file (output="resource").`),
     );
   }
   return notes;
@@ -525,6 +599,8 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
     }
 
     const blocks: ReadableBlock[] = [];
+    const completeText: number[] = [];
+    let partialText: number | undefined;
     // The text of every page that has any, the attached ones included: a stamp, an OCR layer or
     // a partly decoded line still helps, and the section header says to check it against the image.
     const withText = pdfPages.filter((p) => p.chars > 0);
@@ -537,12 +613,32 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
         ].filter(Boolean);
         return `--- Page ${p.n} of ${pageCount}${tags.length > 0 ? ` (${tags.join("; ")})` : ""} ---\n${p.text}`;
       });
-      const capped = cap(`Extracted PDF text:\n\n${sections.join("\n\n")}`, READABLE_LIMITS.maxTextChars);
-      blocks.push(textBlock(capped.text));
-      if (capped.truncated) {
+      // Whole sections while they fit; the one that does not is cut, and reported as cut.
+      let text = "Extracted PDF text:";
+      for (const [i, section] of sections.entries()) {
+        const piece = `\n\n${section}`;
+        if (text.length + piece.length <= READABLE_LIMITS.maxTextChars) {
+          text += piece;
+          completeText.push(withText[i]!.n);
+          continue;
+        }
+        partialText = withText[i]!.n;
+        text += piece.slice(0, READABLE_LIMITS.maxTextChars - text.length);
+        const left = withText.slice(i + 1).map((p) => p.n);
+        const span = (list: number[]) => pages(list).label.toLowerCase();
+        const parts = [
+          completeText.length > 0 ? `${span(completeText)} complete` : "",
+          `page ${partialText} cut off`,
+          left.length > 0 ? `${span(left)} not shown` : "",
+        ].filter(Boolean);
         truncated = true;
-        blocks.push(textBlock(truncationNote()));
+        blocks.push(textBlock(text));
+        blocks.push(
+          textBlock(`[Text truncated after ${READABLE_LIMITS.maxTextChars} characters: ${parts.join(", ")}. ${FULL_FILE}]`),
+        );
+        break;
       }
+      if (partialText === undefined) blocks.push(textBlock(text));
     }
     blocks.push(...images);
 
@@ -553,7 +649,7 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
       notes.push(
         `The PDF contains an image of ${largest.width}×${largest.height} px, more than this server decodes ` +
           `(${READABLE_LIMITS.maxDecodePixels / 1_000_000} MP), so it is missing from the page images. ` +
-          `Get the original file with output="resource".`,
+          FULL_FILE,
       );
     }
     const notAttached = pdfPages.filter((p) => p.render && !p.attached).map((p) => p.n);
@@ -564,7 +660,7 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
           ? `The server was busy rendering other files and ran out of time for this one`
           : `Rendering ran out of time (${Math.round(deadline.budgetMs / 100) / 10} s per call)`) +
           (notAttached.length > 0 ? `: ${pages(notAttached).label.toLowerCase()} ${pages(notAttached).is} not attached as an image` : "") +
-          `. Try again, or get the original file with output="resource".`,
+          `. Try again, or get the full file with output="resource".`,
       );
     } else if (notAttached.length > 0 && !canvasMissing) {
       truncated = true;
@@ -575,7 +671,7 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
     }
     if (readPages < pageCount) {
       notes.push(
-        `Only pages 1–${readPages} of the ${pageCount}-page PDF are read. The full file is in the embedded resource (output="resource").`,
+        `Only pages 1–${readPages} of the ${pageCount}-page PDF are read. ${FULL_FILE}`,
       );
     }
     if (blocks.length === 0 && notes.length === 0) notes.push("The PDF has no extractable text.");
@@ -595,7 +691,8 @@ async function readPdf(data: Buffer, deadline: Deadline): Promise<ReadableConten
       summary: {
         kind,
         pageCount,
-        textPages: withText.map((p) => p.n),
+        textPages: completeText,
+        ...(partialText !== undefined ? { partialTextPage: partialText } : {}),
         renderedPages,
         ...(truncated ? { truncated } : {}),
         ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
