@@ -32,3 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build image
         run: docker build -t lexware-mcp:ci .
+      # @napi-rs/canvas is an optional dependency with a native binary: if it fails to install or
+      # load in the image, scanned receipts silently lose their page images. Check it there.
+      - name: Page images work in the image
+        run: docker run --rm -v "$PWD/scripts:/checks:ro" lexware-mcp:ci node /checks/check-page-images.mjs
