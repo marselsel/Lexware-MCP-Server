@@ -15,6 +15,22 @@ describe("loadConfig", () => {
     expect(c.capabilities).toEqual({ read: true, drafts: true, finalize: false, urlUpload: false });
   });
 
+  it("defaults the file-rendering limits, and reads them from the environment", () => {
+    expect(loadConfig(base()).fileRendering).toEqual({ maxDecodePixels: 50_000_000, timeBudgetMs: 20_000 });
+    const c = loadConfig({ ...base(), LEXWARE_MAX_DECODE_MP: "20", LEXWARE_RENDER_TIME_BUDGET_MS: "45000" });
+    expect(c.fileRendering).toEqual({ maxDecodePixels: 20_000_000, timeBudgetMs: 45_000 });
+  });
+
+  it.each([
+    ["LEXWARE_MAX_DECODE_MP", "0"],
+    ["LEXWARE_MAX_DECODE_MP", "2.5"],
+    ["LEXWARE_MAX_DECODE_MP", "lots"],
+    ["LEXWARE_RENDER_TIME_BUDGET_MS", "500"],
+    ["LEXWARE_RENDER_TIME_BUDGET_MS", "600000"],
+  ])("rejects %s=%s", (name, value) => {
+    expect(() => loadConfig({ ...base(), [name]: value })).toThrow(new RegExp(`Invalid ${name}`));
+  });
+
   it("requires LEXWARE_API_KEY", () => {
     expect(() => loadConfig({ MCP_AUTH_TOKEN: TOKEN } as NodeJS.ProcessEnv)).toThrow(ConfigError);
   });

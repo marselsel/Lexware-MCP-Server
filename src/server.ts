@@ -5,6 +5,7 @@ import { ConfigError, describeCapabilities, loadConfig } from "./config.js";
 import { buildServerInstructions } from "./instructions.js";
 import { LexwareClient } from "./lexware/client.js";
 import { advertisedScopes, buildOAuthMetadata, oauthGate, protectedResourceMetadataUrl } from "./oauth.js";
+import { configureFileRendering, pageImagesInstalled } from "./tools/file-content.js";
 import { createFinalizeConfirmation } from "./tools/finalize-confirmation.js";
 import { registerTools } from "./tools/index.js";
 import { INERT_APP_JSON } from "./server-body-parsing.js";
@@ -34,6 +35,8 @@ try {
 if (!process.env.__PORT) {
   process.env.__PORT = String(config.port);
 }
+
+configureFileRendering(config.fileRendering);
 
 const client = new LexwareClient({
   baseUrl: config.lexwareApiBaseUrl,
@@ -188,6 +191,15 @@ if (config.auth.mode === "oauth" && config.auth.allowedEmailDomains.length === 0
   console.error(
     "[lexware-mcp] WARNING: OAuth mode with no OAUTH_ALLOWED_EMAIL_DOMAINS — ANY user who can " +
       "authenticate with your issuer can reach this server. Set OAUTH_ALLOWED_EMAIL_DOMAINS to restrict access.",
+  );
+}
+// The canvas behind page images is only loaded with the first scan (~0.25 s, ~30 MB); here it
+// is only resolved, so a deployment without it says so at start-up rather than on that scan.
+if (!pageImagesInstalled()) {
+  console.error(
+    "[lexware-mcp] WARNING: @napi-rs/canvas (an optional dependency) is not installed for this platform, " +
+      "so the download tools cannot render scanned PDF pages or downscale images: they return text, and " +
+      "list the pages that need an image as missing. Install dependencies without --omit=optional.",
   );
 }
 if (config.auth.mode === "none") {

@@ -22,6 +22,7 @@ import {
   quotationInputShape,
   sizeParam,
 } from "./schemas.js";
+import { fileOutputParam } from "./file-content.js";
 import type { FinalizeConfirmation } from "./finalize-confirmation.js";
 import { DESTRUCTIVE, LOCAL_RO, RO, WRITE, binaryResult, pagedResult, text } from "./shared.js";
 
@@ -671,15 +672,17 @@ export function registerDocumentReadTools(
         "Download the finalized file of a sales document by resource + id (GET /v1/{resourceType}/{id}/file), " +
         "returned inline — the PDF by default, or the e-invoice XML with format=\"xml\", which exists only for " +
         "an XRechnung invoice, credit note or down payment invoice. The document must be FINALIZED — a draft " +
-        "has no file yet. resourceType is the REST path, e.g. 'invoices', 'credit-notes'.",
+        "has no file yet. resourceType is the REST path, e.g. 'invoices', 'credit-notes'. Returns the PDF's " +
+        "text (or the XML) as readable content plus the raw file; see `output`.",
       inputSchema: {
         resourceType: z.enum(DOC_FILE_PATHS).describe("Document resource path, e.g. 'invoices', 'credit-notes'."),
         id: z.string(),
         format: documentFormatParam,
+        output: fileOutputParam,
       },
       annotations: RO,
     },
-    async ({ resourceType, id, format }) => {
+    async ({ resourceType, id, format, output }) => {
       const wanted: DocumentFileFormat = format === "xml" ? "xml" : "pdf";
       const { data, contentType } = await fetchDocumentFile(client, resourceType, id, wanted);
       return binaryResult({
@@ -694,6 +697,7 @@ export function registerDocumentReadTools(
           byteLength: data.length,
         },
         message: `Downloaded ${resourceType} ${id} as ${wanted.toUpperCase()} (${data.length} bytes).`,
+        output,
       });
     },
   );
@@ -705,14 +709,16 @@ export function registerDocumentReadTools(
       description:
         "Download the receipt attached to a bookkeeping voucher in one call: resolves the voucher's file id " +
         "and returns the file inline (instead of get-voucher then download-file). Use fileIndex to pick a " +
-        "different attachment when a voucher has several.",
+        "different attachment when a voucher has several. A PDF receipt comes back as its extracted text, " +
+        "a scanned page as an image, an image receipt as itself — plus the raw file; see `output`.",
       inputSchema: {
         id: z.string().describe("The voucher id."),
         fileIndex: jsonNum(z.number().int().min(0).default(0)).describe("Which attached file (0 = first)."),
+        output: fileOutputParam,
       },
       annotations: RO,
     },
-    async ({ id, fileIndex }) => {
+    async ({ id, fileIndex, output }) => {
       const voucher = await client.get<{ files?: string[] }>(`/v1/vouchers/${encodeURIComponent(id)}`);
       const fileId = voucher.files?.[fileIndex as number];
       if (!fileId) {
@@ -732,6 +738,7 @@ export function registerDocumentReadTools(
         contentType,
         structuredContent: { voucherId: id, fileId, mimeType: contentType, byteLength: data.length },
         message: `Downloaded voucher ${id} receipt (${data.length} bytes, ${contentType}).`,
+        output,
       });
     },
   );

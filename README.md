@@ -38,7 +38,7 @@ outside them (`upload-file-from-url`, see below):
 
 | Tier | Default | What it covers |
 |------|---------|----------------|
-| **Read** | always on | Profile; contacts & articles (list/get); the voucherlist (plus `summarize-vouchers` for server-side totals); full documents (invoices, quotations, credit notes, order confirmations, delivery notes, dunnings, down-payment invoices, vouchers); **render any document type to PDF** and **download files/receipts** (returned inline as embedded resources); batch & type-dispatched reads (get-vouchers, get-document, get-voucher-file, get-document-file); payments; reference data (countries, payment conditions, posting categories, print layouts); recurring templates (get & list); event subscriptions; document deeplinks |
+| **Read** | always on | Profile; contacts & articles (list/get); the voucherlist (plus `summarize-vouchers` for server-side totals); full documents (invoices, quotations, credit notes, order confirmations, delivery notes, dunnings, down-payment invoices, vouchers); **render any document type to PDF** and **download files/receipts** (returned inline as embedded resources — files over 1.5 MB only with `output="resource"` — plus the PDF's extracted text, scanned pages as images, so clients that drop embedded resources can still read them); batch & type-dispatched reads (get-vouchers, get-document, get-voucher-file, get-document-file); payments; reference data (countries, payment conditions, posting categories, print layouts); recurring templates (get & list); event subscriptions; document deeplinks |
 | **Drafts/writes** (`LEXWARE_ENABLE_DRAFTS`) | on | Create **draft** invoices/quotations/credit-notes/order-confirmations/delivery-notes/dunnings (the Lexware API has no update endpoint for these — set every field, including payment terms, at creation); create & update contacts, articles, and **bookkeeping vouchers**; **upload files** and **attach receipts** to vouchers — inline as base64, or **without base64** via a short-lived upload ticket (`create-upload-ticket` → browser drag-and-drop or a `curl` one-liner → `get-upload-result`); create documents as **follow-ups** (`precedingSalesVoucherId`) |
 | **Finalize** (`LEXWARE_ENABLE_FINALIZE`) | off | Issue **legally binding** finalized documents in one step via the dedicated `create-finalized-*` tools (confirmation-gated); irreversible article deletes; **manage webhook event subscriptions** (create + delete — a webhook streams financial events to an external URL, so it's opt-in). Enabling this tier also enables Drafts. |
 
@@ -206,6 +206,8 @@ LEXWARE_API_KEY=... MCP_AUTH_TOKEN=... npm start
 | `LEXWARE_APP_BASE_URL` | `https://app.lexware.de` | Web-app base for document deeplinks |
 | `PORT` | `8080` | Listen port (your platform may inject this) |
 | `LEXWARE_DEBUG_LOGGING` | `false` | Verbose logs (never secrets/bodies) |
+| `LEXWARE_MAX_DECODE_MP` | `50` | Largest image (in megapixels) the download tools decode to make a page image; a larger one is reported, and the raw file attached instead. Rendering peaks at ~12 bytes per image pixel, so lower it on small instances: `20` for 512 MiB (see `docs/cloud-run.md`) |
+| `LEXWARE_RENDER_TIME_BUDGET_MS` | `20000` | Time one download may spend on page images before it answers without the rest (they are listed as missing, and the raw file is attached). 1000–120000 |
 
 ¹ The server needs **either** `OAUTH_ISSUER` (OAuth) **or** `MCP_AUTH_TOKEN` (static). It
 **refuses to start** with neither, unless `MCP_ALLOW_UNAUTHENTICATED=true`.

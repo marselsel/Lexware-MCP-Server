@@ -1,6 +1,12 @@
 import type { LexwareClient } from "../lexware/client.js";
 import { isNotFound } from "../lexware/errors.js";
 import type { Paged } from "../lexware/types.js";
+import {
+  AUTO_RESOURCE_MAX_BYTES,
+  type FileOutput,
+  INCOMPLETE_RESOURCE_MAX_BYTES,
+  readableContent,
+} from "./file-content.js";
 
 /** Default page size for list tools. */
 export const DEFAULT_PAGE_SIZE = 25;
@@ -85,20 +91,81 @@ function embeddedResourceBlock(uri: string, mimeType: string, data: Buffer) {
 }
 
 /**
- * Standard result for a binary-download tool: structured metadata, a one-line
- * summary, and the file inline as an embedded resource. Shared by every
- * PDF/file download tool so the envelope shape can't drift across them.
+ * Standard result for a binary-download tool: structured metadata, a one-line summary,
+ * readable blocks (extracted PDF text, page images, the image itself — see
+ * {@link readableContent}) and the file inline as an embedded resource. Shared by every
+ * file download tool so the envelope can't drift across them.
+ *
+ * Both forms, because clients differ: Claude Code saves the embedded resource to a file the
+ * model can open, while claude.ai / Cowork never show a PDF blob to the model at all — for
+ * them the readable blocks are the only way in. `output` narrows it to one of the two
+ * (see {@link fileOutputParam}). In "auto" the blob is attached only up to
+ * {@link AUTO_RESOURCE_MAX_BYTES}, so a 5 MB phone photo does not make a 7 MB response for
+ * a client that drops it anyway; a note says how to get it.
  */
-export function binaryResult(opts: {
+export async function binaryResult(opts: {
   uri: string;
   data: Buffer;
   contentType: string;
   structuredContent: Record<string, unknown>;
   message: string;
+  output?: FileOutput;
 }) {
+  const output = opts.output ?? "auto";
+  // Built only when it is sent: base64 of a 12 MB scan is a 16 MB string for nothing otherwise.
+  const resource = () => embeddedResourceBlock(opts.uri, opts.contentType, opts.data);
+  if (output === "resource") {
+    return { structuredContent: opts.structuredContent, content: [...text(opts.message), resource()] };
+  }
+  const readable = await readableContent(opts.data, opts.contentType);
+  // "readable" drops the blob, unless the readable form is missing content: nothing readable
+  // came out of the file, or a page that has to be looked at (a scan) got no image. Then the
+  // blob is the only place that content is, and dropping it would lose the receipt. "auto"
+  // keeps it up to the size cap, and past it says how to get it.
+  const missing = readable.summary.missingPageImages ?? [];
+  const incomplete = readable.summary.kind === "none" || missing.length > 0;
+  const size = opts.data.length;
+  const withinAuto = output === "auto" && size <= AUTO_RESOURCE_MAX_BYTES;
+  // Content only the raw file has is attached in every mode, up to a cap.
+  const keepResource = withinAuto || (incomplete && size <= INCOMPLETE_RESOURCE_MAX_BYTES);
+  const omitted = !keepResource && (output === "auto" || incomplete);
+  const mb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
+  const pageList = `page${missing.length > 1 ? "s" : ""} ${missing.join(", ")}`;
+  const notes: { type: "text"; text: string }[] = [];
+  if (omitted && incomplete) {
+    notes.push({
+      type: "text",
+      text:
+        `[The original file (${mb(size)}) is not attached although ` +
+        (missing.length > 0
+          ? `${pageList} ${missing.length > 1 ? "are" : "is"} not in the readable form above`
+          : "nothing readable came out of it") +
+        `: files over ${INCOMPLETE_RESOURCE_MAX_BYTES / 1_000_000} MB are only sent with output="resource". ` +
+        `Call again with output="resource" to get it.]`,
+    });
+  } else if (omitted) {
+    notes.push({
+      type: "text",
+      text:
+        `[The original file (${mb(size)}) is not attached: "auto" only attaches files up to ` +
+        `${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. Call again with output="resource" to get it.]`,
+    });
+  } else if (missing.length > 0 && !withinAuto) {
+    // Attached although "readable" or the auto size cap would leave it out: say why.
+    notes.push({
+      type: "text",
+      text:
+        `[The original file is attached as an embedded resource, because ${pageList} ` +
+        `${missing.length > 1 ? "are" : "is"} not in the readable form above.]`,
+    });
+  }
   return {
-    structuredContent: opts.structuredContent,
-    content: [...text(opts.message), embeddedResourceBlock(opts.uri, opts.contentType, opts.data)],
+    structuredContent: {
+      ...opts.structuredContent,
+      readable: readable.summary,
+      ...(omitted ? { resourceOmitted: true } : {}),
+    },
+    content: [...text(opts.message), ...readable.blocks, ...notes, ...(keepResource ? [resource()] : [])],
   };
 }
 

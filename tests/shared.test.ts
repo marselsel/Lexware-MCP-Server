@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LexwareClient } from "../src/lexware/client.js";
 import { LexwareApiError } from "../src/lexware/errors.js";
 import type { Paged } from "../src/lexware/types.js";
+import { AUTO_RESOURCE_MAX_BYTES } from "../src/tools/file-content.js";
 import {
   binaryResult,
   decodeBase64Strict,
@@ -12,6 +13,7 @@ import {
   text,
   withJsonText,
 } from "../src/tools/shared.js";
+import { textPdf } from "./fixtures/pdf.js";
 import { mergeBody } from "../src/tools/schemas.js";
 
 describe("deepMergePatch (read-modify-write)", () => {
@@ -205,24 +207,94 @@ describe("pagedResult", () => {
 });
 
 describe("binaryResult", () => {
-  it("builds a text summary + an embedded-resource block with base64 data", () => {
-    const data = Buffer.from("%PDF-1.7");
-    const res = binaryResult({
-      uri: "lexware://files/f1",
-      data,
-      contentType: "application/pdf",
-      structuredContent: { fileId: "f1" },
-      message: "Downloaded file f1.",
-    });
+  const pdf = () => textPdf([["Rechnung Nr. RE-2026-0042", "USt-IdNr. DE123456789", "Brutto 119,00 EUR"]]);
+  const opts = (data: Buffer, contentType = "application/pdf") => ({
+    uri: "lexware://files/f1",
+    data,
+    contentType,
+    structuredContent: { fileId: "f1" },
+    message: "Downloaded file f1.",
+  });
+  const resourceOf = (data: Buffer, mimeType = "application/pdf") => ({
+    type: "resource",
+    resource: { uri: "lexware://files/f1", mimeType, blob: data.toString("base64") },
+  });
+
+  it("returns the summary, the readable text and the embedded resource by default", async () => {
+    const data = pdf();
+    const res = await binaryResult(opts(data));
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text", "resource"]);
     expect(res.content[0]).toEqual({ type: "text", text: "Downloaded file f1." });
-    expect(res.content[1]).toEqual({
-      type: "resource",
-      resource: {
-        uri: "lexware://files/f1",
-        mimeType: "application/pdf",
-        blob: data.toString("base64"),
-      },
-    });
+    expect((res.content[1] as { text: string }).text).toContain("Rechnung Nr. RE-2026-0042");
+    // The blob is untouched: PDF.js works on a copy and must not detach the caller's bytes.
+    expect(res.content[2]).toEqual(resourceOf(data));
+    expect(res.structuredContent).toMatchObject({ fileId: "f1", readable: { kind: "text", pageCount: 1 } });
+  });
+
+  it('output="resource" returns exactly what it did before: summary + embedded resource', async () => {
+    const data = pdf();
+    const res = await binaryResult({ ...opts(data), output: "resource" });
+    expect(res.content).toEqual([{ type: "text", text: "Downloaded file f1." }, resourceOf(data)]);
+    expect(res.structuredContent).toEqual({ fileId: "f1" });
+  });
+
+  it('output="readable" drops the blob', async () => {
+    const res = await binaryResult({ ...opts(pdf()), output: "readable" });
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text"]);
+  });
+
+  it('output="readable" keeps the blob when nothing readable came out of the file', async () => {
+    const data = Buffer.from("PK\x03\x04 a zip");
+    const res = await binaryResult({ ...opts(data, "application/zip"), output: "readable" });
+    expect(res.content.at(-1)).toEqual(resourceOf(data, "application/zip"));
+  });
+
+  it('"auto" attaches the raw file only up to AUTO_RESOURCE_MAX_BYTES, and says how to get a larger one', async () => {
+    // An e-invoice XML just over the cap: readable as text, so the blob is left out.
+    const line = "<Line><ID>4711</ID><Amount currencyID=\"EUR\">12.50</Amount></Line>\n";
+    const big = Buffer.from(line.repeat(Math.ceil((AUTO_RESOURCE_MAX_BYTES + 1) / line.length)));
+    const res = await binaryResult(opts(big, "application/xml"));
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text", "text", "text"]);
+    expect((res.content.at(-1) as { text: string }).text).toBe(
+      `[The original file (${(big.length / 1e6).toFixed(1)} MB) is not attached: "auto" only attaches files up to 1.5 MB. ` +
+        'Call again with output="resource" to get it.]',
+    );
+    expect(res.structuredContent).toMatchObject({ resourceOmitted: true });
+
+    // At the cap it is still attached.
+    const atCap = big.subarray(0, AUTO_RESOURCE_MAX_BYTES);
+    const kept = await binaryResult(opts(atCap, "application/xml"));
+    expect(kept.content.at(-1)).toEqual(resourceOf(atCap, "application/xml"));
+    expect(kept.structuredContent).not.toHaveProperty("resourceOmitted");
+
+    // output="resource" returns it at any size.
+    const raw = await binaryResult({ ...opts(big, "application/xml"), output: "resource" });
+    expect(raw.content.at(-1)).toEqual(resourceOf(big, "application/xml"));
+  });
+
+  it("only encodes the raw file as base64 when it is attached", async () => {
+    const line = "<Line><ID>4711</ID></Line>\n";
+    const big = Buffer.from(line.repeat(Math.ceil((AUTO_RESOURCE_MAX_BYTES + 1) / line.length)));
+    const toString = vi.spyOn(big, "toString");
+    await binaryResult(opts(big, "application/xml"));
+    expect(toString.mock.calls.map(([encoding]) => encoding)).not.toContain("base64");
+    await binaryResult({ ...opts(big, "application/xml"), output: "resource" });
+    expect(toString.mock.calls.map(([encoding]) => encoding)).toContain("base64");
+  });
+
+  it('"auto" keeps a large file it cannot read: the blob is all there is', async () => {
+    const zip = Buffer.alloc(AUTO_RESOURCE_MAX_BYTES + 1);
+    zip.write("PK\x03\x04", 0, "latin1");
+    const res = await binaryResult(opts(zip, "application/zip"));
+    expect(res.content.at(-1)).toEqual(resourceOf(zip, "application/zip"));
+  });
+
+  it("still downloads a file it cannot parse, with a note instead of the text", async () => {
+    const data = Buffer.from("%PDF-1.7");
+    const res = await binaryResult(opts(data));
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text", "resource"]);
+    expect((res.content[1] as { text: string }).text).toMatch(/^Could not read the file's content/);
+    expect(res.content[2]).toEqual(resourceOf(data));
   });
 });
 
@@ -235,10 +307,17 @@ describe("withJsonText", () => {
     ]);
   });
 
-  it("keeps a binary result's embedded file and adds the metadata after it", () => {
+  it("keeps a binary result's embedded file and adds the metadata after it", async () => {
     const data = Buffer.from("%PDF");
     const out = withJsonText(
-      binaryResult({ uri: "lexware://files/f1", data, contentType: "application/pdf", structuredContent: { fileId: "f1" }, message: "Downloaded." }),
+      await binaryResult({
+        uri: "lexware://files/f1",
+        data,
+        contentType: "application/pdf",
+        structuredContent: { fileId: "f1" },
+        message: "Downloaded.",
+        output: "resource",
+      }),
     );
     expect(out.content.map((c) => c.type)).toEqual(["text", "resource", "text"]);
     expect(out.content[2]).toEqual({ type: "text", text: '{"fileId":"f1"}' });

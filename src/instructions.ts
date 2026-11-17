@@ -23,6 +23,9 @@ export function buildServerInstructions(capabilities: Capabilities): string {
     "get-voucherlist is the index of every financial document. Its voucherNumber filter is the only way to " +
       "find a document by its number (exact match). A voucherlist row resolves to the full document with " +
       "get-document(id, voucherType), and to its PDF with get-document-file.",
+    "The download tools (get-voucher-file, get-document-file, download-file) return a PDF's text, scanned " +
+      "pages as images and image files as images, next to the raw file as an embedded resource (over 1.5 MB " +
+      'only with output="resource").',
     "Dates: the voucherlist date filters take yyyy-MM-dd; document and voucher bodies take a full ISO " +
       "datetime with offset (2026-07-06T00:00:00.000+02:00).",
   ];
