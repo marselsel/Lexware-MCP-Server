@@ -468,6 +468,8 @@ interface PdfPage {
   attached: boolean;
   /** A tall page goes out as two images (top and bottom half). */
   tiles?: number;
+  /** Why its layout or image failed, when it did (other pages are unaffected). */
+  failed?: string;
 }
 
 /**
@@ -689,6 +691,7 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     maxImageSize: settings.maxDecodePixels,
   });
   const { OPS } = await getResolvedPDFJS();
+  let stopped: BudgetExceeded | undefined;
   try {
     const pageCount = pdf.numPages;
     const readPages = Math.min(pageCount, READABLE_LIMITS.maxTextPages);
@@ -697,20 +700,24 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     const notes: string[] = [];
     let truncated = readPages < pageCount;
     let canvasMissing = false;
-    let stopped: BudgetExceeded | undefined;
 
     // Pass 1: the text of every page read. Cheap — no image is decoded for it — but bounded
     // too: pages it does not get to are reported as missing.
     const unread: number[] = [];
+    const unreadable: { n: number; error: string }[] = [];
     for (let n = 1; n <= readPages; n++) {
       let items;
       try {
         items = (await deadline.race((async () => (await pdf.getPage(n)).getTextContent())())).items;
       } catch (err) {
-        if (!(err instanceof BudgetExceeded)) throw err;
-        stopped = err;
-        for (let rest = n; rest <= readPages; rest++) unread.push(rest);
-        break;
+        if (err instanceof BudgetExceeded) {
+          stopped = err;
+          for (let rest = n; rest <= readPages; rest++) unread.push(rest);
+          break;
+        }
+        // One broken page does not cost the others their text.
+        unreadable.push({ n, error: errorMessage(err) });
+        continue;
       }
       const raw = items
         .map((item) => ("str" in item ? item.str + (item.hasEOL ? "\n" : "") : ""))
@@ -767,8 +774,8 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
         info.render = renderReason(info, file);
         continue;
       }
-      const page = await pdf.getPage(info.n);
       const work = async () => {
+        const page = await pdf.getPage(info.n);
         if (info.chars < READABLE_LIMITS.minPageChars && !oversized) {
           // Almost always a scan or a photo: JPEG, unless the file has no image at all.
           info.render = "no-text";
@@ -801,9 +808,13 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
           cancel: () => pdf.loadingTask.destroy(),
         });
       } catch (err) {
-        if (!(err instanceof BudgetExceeded)) throw err;
-        stopped = err;
         info.render ??= renderReason(info, file);
+        if (err instanceof BudgetExceeded) {
+          stopped = err;
+        } else {
+          // A page whose layout or render fails is reported; the other pages are unaffected.
+          info.failed = errorMessage(err);
+        }
       }
     }
 
@@ -864,7 +875,10 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
           (tooLarge.length > 0 ? `: ${pages(tooLarge).label.toLowerCase()} ${pages(tooLarge).has} no page image here.` : "."),
       );
     }
-    const unmade = missing.filter((p) => !p.oversized);
+    const failed = missing.filter((p) => p.failed);
+    for (const p of failed) notes.push(`Page ${p.n} could not be rendered (${p.failed}).`);
+    for (const { n, error } of unreadable) notes.push(`Page ${n} could not be read (${error}).`);
+    const unmade = missing.filter((p) => !p.oversized && !p.failed);
     if (unmade.length > 0) {
       const p = pages(unmade.map((page) => page.n));
       const guessed = unmade.filter((page) => !page.checked && page.render === "scan").map((page) => page.n);
@@ -893,7 +907,8 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
     if (unread.length > 0) {
       notes.push(`${pages(unread).label} could not be read in time.`);
     }
-    if (missing.length > 0 || unread.length > 0 || stopped) truncated = true;
+    const lost = [...unread, ...unreadable.map((u) => u.n)];
+    if (missing.length > 0 || lost.length > 0 || stopped) truncated = true;
     if (canvasMissing && unmade.length === 0) notes.push(NO_CANVAS_NOTE);
     if (readPages < pageCount) {
       notes.push(`Only pages 1–${readPages} of the ${pageCount}-page PDF are read. ${FULL_FILE}`);
@@ -918,16 +933,19 @@ async function readPdf(data: Buffer, budget: Budget): Promise<ReadableContent> {
         textPages: completeText,
         ...(partialText !== undefined ? { partialTextPage: partialText } : {}),
         renderedPages,
-        ...(missing.length > 0 || unread.length > 0
-          ? { missingPageImages: [...missing.map((p) => p.n), ...unread].sort((a, b) => a - b) }
+        ...(missing.length > 0 || lost.length > 0
+          ? { missingPageImages: [...missing.map((p) => p.n), ...lost].sort((a, b) => a - b) }
           : {}),
         ...(truncated ? { truncated } : {}),
         ...(notes.length > 0 ? { note: notes.join(" ") } : {}),
       },
     };
   } finally {
-    // Bounded: after a cancelled render, pdf.js' teardown can wait on work that never settles.
-    await settleWithin(pdf.loadingTask.destroy(), graceMs);
+    // After a timeout the call answers now: pdf.js' teardown can wait on a cancelled render that
+    // never settles, so it runs in the background (bounded), while runWithin keeps a heavy
+    // page's slot until that render has really stopped. Otherwise it is quick: wait for it.
+    const teardown = settleWithin(pdf.loadingTask.destroy(), graceMs);
+    if (!stopped) await teardown;
   }
 }
 

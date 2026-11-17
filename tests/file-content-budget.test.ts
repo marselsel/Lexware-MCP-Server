@@ -14,7 +14,12 @@ import { fixturePdf } from "./fixtures/pdf.js";
 // pdf.js render can do once its document is destroyed under it), or an image decode that is
 // slow. In its own file: the mocks replace "unpdf" and the canvas for every test here.
 const renders = vi.hoisted(() => [] as { page: number; options: Record<string, unknown> }[]);
-const faults = vi.hoisted(() => ({ hangRender: false, slowDecodeMs: 0 }));
+const faults = vi.hoisted(() => ({
+  hangRender: false,
+  slowDecodeMs: 0,
+  failRenderPage: 0,
+  failTextPage: 0,
+}));
 vi.mock("unpdf", async (importOriginal) => {
   const unpdf = await importOriginal<typeof import("unpdf")>();
   return {
@@ -22,7 +27,18 @@ vi.mock("unpdf", async (importOriginal) => {
     renderPageAsImage: (pdf: never, page: number, options: Record<string, unknown>) => {
       renders.push({ page, options });
       if (faults.hangRender) return new Promise(() => {});
+      if (faults.failRenderPage === page) return Promise.reject(new Error("render failed"));
       return unpdf.renderPageAsImage(pdf, page, options as never);
+    },
+    getDocumentProxy: async (...args: Parameters<typeof unpdf.getDocumentProxy>) => {
+      const pdf = await unpdf.getDocumentProxy(...args);
+      const getPage = pdf.getPage.bind(pdf);
+      pdf.getPage = async (n: number) => {
+        const page = await getPage(n);
+        if (n === faults.failTextPage) page.getTextContent = () => Promise.reject(new Error("bad text stream"));
+        return page;
+      };
+      return pdf;
     },
   };
 });
@@ -56,6 +72,8 @@ afterEach(() => {
   renders.length = 0;
   faults.hangRender = false;
   faults.slowDecodeMs = 0;
+  faults.failRenderPage = 0;
+  faults.failTextPage = 0;
   vi.restoreAllMocks();
 });
 
@@ -140,6 +158,16 @@ describe("runWithin", () => {
     ).rejects.toBeInstanceOf(BudgetExceeded);
     await slotsFreeOf(slots, 500);
     await expect(runWithin(async () => "next", { deadline: new Deadline(100), graceMs: 50, slots })).resolves.toBe("next");
+  });
+
+  it("does not start work once the deadline has passed, even with a slot free", async () => {
+    const slots = new Semaphore(1);
+    const work = vi.fn(async () => "decoded");
+    await expect(runWithin(work, { deadline: new Deadline(0), graceMs: 50, slots })).rejects.toEqual(
+      new BudgetExceeded("time"),
+    );
+    expect(work).not.toHaveBeenCalled();
+    expect(slots.running).toBe(0);
   });
 
   it("frees the slot when the work fails", async () => {
@@ -244,6 +272,26 @@ describe.skipIf(!canvas)("rendering cost", () => {
       release();
       await holder;
     }
+  });
+
+  it("keeps the other pages when one page fails to render", async () => {
+    faults.failRenderPage = 2;
+    const { blocks, summary } = await readableContent(
+      fixturePdf([INVOICE_PAGE, { image: true, imageKind: "heavy" }, "scan"]),
+      "application/pdf",
+    );
+    expect(texts(blocks)[0]).toContain("RE-2026-0042");
+    expect(images(blocks)).toHaveLength(1);
+    expect(summary).toMatchObject({ kind: "text+image", textPages: [1], renderedPages: [3], missingPageImages: [2] });
+    expect(summary.note).toMatch(/Page 2 could not be rendered \(render failed\)\./);
+  });
+
+  it("keeps the other pages when one page's text cannot be read", async () => {
+    faults.failTextPage = 1;
+    const { blocks, summary } = await readableContent(fixturePdf([["unreadable page"], INVOICE_PAGE]), "application/pdf");
+    expect(texts(blocks)[0]).toContain("RE-2026-0042");
+    expect(summary).toMatchObject({ kind: "text", textPages: [2], missingPageImages: [1] });
+    expect(summary.note).toMatch(/Page 1 could not be read \(bad text stream\)\./);
   });
 
   it("reports pages it had no time to read at all as missing", async () => {

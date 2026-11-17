@@ -152,6 +152,11 @@ export function runWithin<T>(
       }
     };
     const task = async () => {
+      // A slot that frees up after the deadline must not start a decode nobody will wait for.
+      if (deadline.expired) {
+        answer(() => reject(new BudgetExceeded("time")));
+        return;
+      }
       const running = work();
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timedOut = new Promise<"timeout">((done) => {
