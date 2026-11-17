@@ -1,6 +1,7 @@
 import type { McpServer } from "skybridge/server";
 import { z } from "zod";
 import type { LexwareClient } from "../lexware/client.js";
+import { fileOutputParam } from "./file-content.js";
 import { RO, WRITE, binaryResult, decodeBase64Strict, text } from "./shared.js";
 
 /** Read tools for the file store. Always registered. */
@@ -10,18 +11,20 @@ export function registerFileReadTools(server: McpServer, client: LexwareClient):
       name: "download-file",
       title: "Download file",
       description:
-        "Download a file (a rendered document PDF or an uploaded receipt) by its file id. Returns the " +
-        "bytes inline as an embedded resource. File ids come from upload-file, an upload ticket, or a voucher's files[].",
+        "Download a file (a rendered document PDF or an uploaded receipt) by its file id. Returns a PDF's " +
+        "extracted text (scanned pages as images), an image as itself, and the raw bytes as an embedded " +
+        "resource; see `output`. File ids come from upload-file, an upload ticket, or a voucher's files[].",
       inputSchema: {
         id: z.string().describe("The Lexware file id."),
         accept: z
           .string()
           .optional()
           .describe('Preferred MIME type to request, e.g. "application/pdf". Defaults to any type.'),
+        output: fileOutputParam,
       },
       annotations: RO,
     },
-    async ({ id, accept }) => {
+    async ({ id, accept, output }) => {
       const { data, contentType } = await client.getBinary(
         `/v1/files/${encodeURIComponent(id)}`,
         accept ?? "*/*",
@@ -32,6 +35,7 @@ export function registerFileReadTools(server: McpServer, client: LexwareClient):
         contentType,
         structuredContent: { fileId: id, mimeType: contentType, byteLength: data.length },
         message: `Downloaded file ${id} (${data.length} bytes, ${contentType}).`,
+        output,
       });
     },
   );

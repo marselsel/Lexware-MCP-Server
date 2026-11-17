@@ -1,6 +1,7 @@
 import type { LexwareClient } from "../lexware/client.js";
 import { isNotFound } from "../lexware/errors.js";
 import type { Paged } from "../lexware/types.js";
+import { type FileOutput, readableContent } from "./file-content.js";
 
 /** Default page size for list tools. */
 export const DEFAULT_PAGE_SIZE = 25;
@@ -85,20 +86,36 @@ function embeddedResourceBlock(uri: string, mimeType: string, data: Buffer) {
 }
 
 /**
- * Standard result for a binary-download tool: structured metadata, a one-line
- * summary, and the file inline as an embedded resource. Shared by every
- * PDF/file download tool so the envelope shape can't drift across them.
+ * Standard result for a binary-download tool: structured metadata, a one-line summary,
+ * readable blocks (extracted PDF text, page images, the image itself — see
+ * {@link readableContent}) and the file inline as an embedded resource. Shared by every
+ * file download tool so the envelope can't drift across them.
+ *
+ * Both forms, because clients differ: Claude Code saves the embedded resource to a file the
+ * model can open, while claude.ai / Cowork never show a PDF blob to the model at all — for
+ * them the readable blocks are the only way in. `output` narrows it to one of the two
+ * (see {@link fileOutputParam}).
  */
-export function binaryResult(opts: {
+export async function binaryResult(opts: {
   uri: string;
   data: Buffer;
   contentType: string;
   structuredContent: Record<string, unknown>;
   message: string;
+  output?: FileOutput;
 }) {
+  const output = opts.output ?? "auto";
+  const resource = embeddedResourceBlock(opts.uri, opts.contentType, opts.data);
+  if (output === "resource") {
+    return { structuredContent: opts.structuredContent, content: [...text(opts.message), resource] };
+  }
+  const readable = await readableContent(opts.data, opts.contentType);
+  // "readable" drops the blob, unless nothing readable came out of the file: then the blob
+  // is all there is, and returning neither would lose the file entirely.
+  const keepResource = output === "auto" || readable.summary.kind === "none";
   return {
-    structuredContent: opts.structuredContent,
-    content: [...text(opts.message), embeddedResourceBlock(opts.uri, opts.contentType, opts.data)],
+    structuredContent: { ...opts.structuredContent, readable: readable.summary },
+    content: [...text(opts.message), ...readable.blocks, ...(keepResource ? [resource] : [])],
   };
 }
 

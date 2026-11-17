@@ -12,6 +12,7 @@ import {
   text,
   withJsonText,
 } from "../src/tools/shared.js";
+import { textPdf } from "./fixtures/pdf.js";
 import { mergeBody } from "../src/tools/schemas.js";
 
 describe("deepMergePatch (read-modify-write)", () => {
@@ -205,24 +206,54 @@ describe("pagedResult", () => {
 });
 
 describe("binaryResult", () => {
-  it("builds a text summary + an embedded-resource block with base64 data", () => {
-    const data = Buffer.from("%PDF-1.7");
-    const res = binaryResult({
-      uri: "lexware://files/f1",
-      data,
-      contentType: "application/pdf",
-      structuredContent: { fileId: "f1" },
-      message: "Downloaded file f1.",
-    });
+  const pdf = () => textPdf([["Rechnung Nr. RE-2026-0042", "USt-IdNr. DE123456789", "Brutto 119,00 EUR"]]);
+  const opts = (data: Buffer, contentType = "application/pdf") => ({
+    uri: "lexware://files/f1",
+    data,
+    contentType,
+    structuredContent: { fileId: "f1" },
+    message: "Downloaded file f1.",
+  });
+  const resourceOf = (data: Buffer, mimeType = "application/pdf") => ({
+    type: "resource",
+    resource: { uri: "lexware://files/f1", mimeType, blob: data.toString("base64") },
+  });
+
+  it("returns the summary, the readable text and the embedded resource by default", async () => {
+    const data = pdf();
+    const res = await binaryResult(opts(data));
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text", "resource"]);
     expect(res.content[0]).toEqual({ type: "text", text: "Downloaded file f1." });
-    expect(res.content[1]).toEqual({
-      type: "resource",
-      resource: {
-        uri: "lexware://files/f1",
-        mimeType: "application/pdf",
-        blob: data.toString("base64"),
-      },
-    });
+    expect((res.content[1] as { text: string }).text).toContain("Rechnung Nr. RE-2026-0042");
+    // The blob is untouched: PDF.js works on a copy and must not detach the caller's bytes.
+    expect(res.content[2]).toEqual(resourceOf(data));
+    expect(res.structuredContent).toMatchObject({ fileId: "f1", readable: { kind: "text", pageCount: 1 } });
+  });
+
+  it('output="resource" returns exactly what it did before: summary + embedded resource', async () => {
+    const data = pdf();
+    const res = await binaryResult({ ...opts(data), output: "resource" });
+    expect(res.content).toEqual([{ type: "text", text: "Downloaded file f1." }, resourceOf(data)]);
+    expect(res.structuredContent).toEqual({ fileId: "f1" });
+  });
+
+  it('output="readable" drops the blob', async () => {
+    const res = await binaryResult({ ...opts(pdf()), output: "readable" });
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text"]);
+  });
+
+  it('output="readable" keeps the blob when nothing readable came out of the file', async () => {
+    const data = Buffer.from("PK\x03\x04 a zip");
+    const res = await binaryResult({ ...opts(data, "application/zip"), output: "readable" });
+    expect(res.content.at(-1)).toEqual(resourceOf(data, "application/zip"));
+  });
+
+  it("still downloads a file it cannot parse, with a note instead of the text", async () => {
+    const data = Buffer.from("%PDF-1.7");
+    const res = await binaryResult(opts(data));
+    expect(res.content.map((c) => c.type)).toEqual(["text", "text", "resource"]);
+    expect((res.content[1] as { text: string }).text).toMatch(/^Could not read the file's content/);
+    expect(res.content[2]).toEqual(resourceOf(data));
   });
 });
 
@@ -235,10 +266,17 @@ describe("withJsonText", () => {
     ]);
   });
 
-  it("keeps a binary result's embedded file and adds the metadata after it", () => {
+  it("keeps a binary result's embedded file and adds the metadata after it", async () => {
     const data = Buffer.from("%PDF");
     const out = withJsonText(
-      binaryResult({ uri: "lexware://files/f1", data, contentType: "application/pdf", structuredContent: { fileId: "f1" }, message: "Downloaded." }),
+      await binaryResult({
+        uri: "lexware://files/f1",
+        data,
+        contentType: "application/pdf",
+        structuredContent: { fileId: "f1" },
+        message: "Downloaded.",
+        output: "resource",
+      }),
     );
     expect(out.content.map((c) => c.type)).toEqual(["text", "resource", "text"]);
     expect(out.content[2]).toEqual({ type: "text", text: '{"fileId":"f1"}' });

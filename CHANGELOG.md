@@ -28,6 +28,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   or delete data.
 
 ### Added
+- The download tools (`get-voucher-file`, `download-file`, `get-document-file`) now return the file in
+  a form the model can read on every client, not only as an embedded resource: a PDF's extracted text
+  (one section per page), pages without a text layer (scans, photos saved as PDF) rendered to an
+  image, image attachments as image blocks, and XML as text. claude.ai and Cowork never show a PDF
+  blob to the model, so receipts fetched there were unreadable ([#71](https://github.com/marselsel/Lexware-MCP-Server/issues/71)). The embedded resource is still
+  returned, so Claude Code works as before. A new `output` parameter picks `auto` (both, default),
+  `readable` (text/images only, smaller) or `resource` (only the raw file, the old shape). Pages
+  read, pages rendered, render size and text length are capped. One helper serves all three tools.
+  Uses `unpdf` (text) and the optional `@napi-rs/canvas` (page images), both loaded on first use, so
+  start-up is unaffected; without the canvas, scans come back with a note instead of an image.
 - Every tool has a human-readable `title` (e.g. "Issue invoice (finalize, irreversible)"), which
   clients show instead of the tool name. It is set both as the top-level `title` and as
   `annotations.title`: the spec reads the first, Anthropic's directory checklist asks for the second.
