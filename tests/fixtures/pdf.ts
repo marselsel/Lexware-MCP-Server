@@ -39,8 +39,18 @@ function lit(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
 }
 
-/** A page of real (extractable) text lines, or "scan": a page that is only an image. */
-export type FixturePage = string[] | "scan";
+/**
+ * A fixture page. Shorthands: a string array is a born-digital page of text lines; "scan" is a
+ * page that is only an image. The object form combines them:
+ *   - `lines` drawn as text (`invisible`: in render mode 3, like a scanner's OCR layer)
+ *   - `image`: the page is covered by the scan image, or only the box [x, y, w, h] in points
+ *   - `font: "nul-hyphen"`: a font whose ToUnicode CMap maps "-" to U+0000, as Stripe's
+ *     invoice PDFs do for the hyphen, minus sign and dash
+ */
+export type FixturePage =
+  | string[]
+  | "scan"
+  | { lines?: string[]; image?: true | [number, number, number, number]; invisible?: boolean; font?: "nul-hyphen" };
 
 /** A grey checkerboard, standing in for a scanned receipt. */
 function scanPixels(w: number, h: number): Buffer {
@@ -53,25 +63,44 @@ function scanPixels(w: number, h: number): Buffer {
   return pixels;
 }
 
-/** A PDF with the given pages: text pages draw each line in Helvetica, scan pages one image. */
+/** ToUnicode for a simple font: printable ASCII to itself, except "-" (0x2D) to U+0000. */
+const NUL_HYPHEN_CMAP = [
+  "/CIDInit /ProcSet findresource begin 12 dict begin begincmap",
+  "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+  "/CMapName /Adobe-Identity-UCS def /CMapType 2 def",
+  "1 begincodespacerange <00> <FF> endcodespacerange",
+  "2 beginbfrange <20> <2C> <0020> <2E> <7E> <002E> endbfrange",
+  "1 beginbfchar <2D> <0000> endbfchar",
+  "endcmap CMapName currentdict /CMap defineresource pop end end",
+].join("\n");
+
+/** A PDF with the given pages (see {@link FixturePage}), A4 each. */
 export function fixturePdf(pages: FixturePage[]): Buffer {
-  // 1 catalog, 2 pages, 3 font, 4 the scan image, then (page, content) pairs.
-  const pageIds = pages.map((_, i) => 5 + i * 2);
+  // 1 catalog, 2 pages, 3 font, 4 the scan image, 5 the NUL-hyphen font, 6 its ToUnicode,
+  // then (page, content) pairs.
+  const pageIds = pages.map((_, i) => 7 + i * 2);
   const objects: (string | Buffer)[] = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${pages.length} >>`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
     stream("/Type /XObject /Subtype /Image /Width 40 /Height 40 /ColorSpace /DeviceRGB /BitsPerComponent 8", scanPixels(40, 40)),
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 6 0 R >>",
+    stream("", NUL_HYPHEN_CMAP),
   ];
-  pages.forEach((page, i) => {
-    const ops =
-      page === "scan"
-        ? "q 595 0 0 842 0 0 cm /Im1 Do Q"
-        : page.map((l, j) => `BT /F1 12 Tf 50 ${780 - j * 18} Td (${lit(l)}) Tj ET`).join("\n");
+  pages.forEach((p, i) => {
+    const page = p === "scan" ? { image: true as const } : Array.isArray(p) ? { lines: p } : p;
+    const [x, y, w, h] = page.image === true ? [0, 0, 595, 842] : (page.image ?? [0, 0, 0, 0]);
+    const font = page.font === "nul-hyphen" ? "/F2" : "/F1";
+    const ops = [
+      page.image ? `q ${w} 0 0 ${h} ${x} ${y} cm /Im1 Do Q` : "",
+      ...(page.lines ?? []).map(
+        (l, j) => `BT ${page.invisible ? "3 Tr " : ""}${font} 12 Tf 50 ${780 - j * 18} Td (${lit(l)}) Tj ET`,
+      ),
+    ].filter(Boolean);
     objects.push(
       `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ` +
-        `/Resources << /Font << /F1 3 0 R >> /XObject << /Im1 4 0 R >> >> /Contents ${pageIds[i]! + 1} 0 R >>`,
-      stream("", ops),
+        `/Resources << /Font << /F1 3 0 R /F2 5 0 R >> /XObject << /Im1 4 0 R >> >> /Contents ${pageIds[i]! + 1} 0 R >>`,
+      stream("", ops.join("\n")),
     );
   });
   return buildPdf(objects);

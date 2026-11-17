@@ -1,6 +1,7 @@
 import { createCanvas } from "@napi-rs/canvas";
 import { describe, expect, it } from "vitest";
 import { READABLE_LIMITS, readableContent, type ReadableBlock } from "../src/tools/file-content.js";
+import { binaryResult, withJsonText } from "../src/tools/shared.js";
 import { fixturePdf, imageOnlyPdf, textPdf, TINY_PNG } from "./fixtures/pdf.js";
 
 const texts = (blocks: ReadableBlock[]) => blocks.filter((b) => b.type === "text").map((b) => b.text);
@@ -43,7 +44,7 @@ describe("readableContent: PDF with a text layer", () => {
     const [text, ...notes] = texts(blocks);
     expect(text!.length).toBeLessThanOrEqual(READABLE_LIMITS.maxTextChars);
     expect(notes.join(" ")).toMatch(/Text truncated after 30000 characters/);
-    expect(notes.join(" ")).toMatch(/Only part of the 35-page PDF/);
+    expect(notes.join(" ")).toMatch(/Only pages 1–30 of the 35-page PDF are read/);
     expect(summary.truncated).toBe(true);
     expect(summary.textPages).toHaveLength(READABLE_LIMITS.maxTextPages);
   });
@@ -57,7 +58,7 @@ describe("readableContent: PDF without a text layer (scan)", () => {
     const { width, height } = pngSize(image!.data);
     expect(Math.max(width, height)).toBeLessThanOrEqual(READABLE_LIMITS.maxImageSide);
     expect(Math.max(width, height)).toBeGreaterThan(READABLE_LIMITS.maxImageSide / 2); // legible, not a thumbnail
-    expect(texts(blocks).join(" ")).toMatch(/Page 1 has little or no text layer/);
+    expect(texts(blocks).join(" ")).toMatch(/Page 1 has little or no visible text/);
     expect(summary).toMatchObject({ kind: "image", pageCount: 1, textPages: [], renderedPages: [1] });
   });
 
@@ -71,12 +72,102 @@ describe("readableContent: PDF without a text layer (scan)", () => {
     expect(summary).toMatchObject({ kind: "text+image", textPages: [1], renderedPages: [2] });
   });
 
+  it("renders a scan that carries a short line of text, such as a scanner app's stamp", async () => {
+    const { blocks, summary } = await readableContent(
+      fixturePdf([{ image: true, lines: ["Scanned with CamScanner"] }]),
+      "application/pdf",
+    );
+    expect(images(blocks)).toHaveLength(1);
+    // The stamp is still returned, but marked: the content is in the image.
+    expect(texts(blocks)[0]).toContain("--- Page 1 of 1 (page image attached) ---\nScanned with CamScanner");
+    expect(texts(blocks).join(" ")).toMatch(/Page 1 is mostly an image with only a little text/);
+    expect(summary).toMatchObject({ kind: "text+image", textPages: [1], renderedPages: [1] });
+  });
+
+  it("renders a photo that covers only part of the page, next to an inbox stamp", async () => {
+    const { blocks, summary } = await readableContent(
+      fixturePdf([{ image: [100, 200, 300, 450], lines: ["Eingegangen 17.11.2026", "Buchhaltung"] }]),
+      "application/pdf",
+    );
+    expect(images(blocks)).toHaveLength(1);
+    expect(summary.renderedPages).toEqual([1]);
+  });
+
+  it("renders a scan whose text layer is invisible OCR, and keeps the OCR text", async () => {
+    const ocr = Array.from({ length: 12 }, (_, i) => `Position ${i + 1} Bueromaterial 12,50 EUR`);
+    const { blocks, summary } = await readableContent(
+      fixturePdf([{ image: true, lines: ocr, invisible: true }]),
+      "application/pdf",
+    );
+    expect(images(blocks)).toHaveLength(1);
+    expect(texts(blocks)[0]).toContain("invisible OCR text layer, may contain recognition errors; page image attached");
+    expect(texts(blocks)[0]).toContain("Position 12 Bueromaterial 12,50 EUR");
+    expect(summary).toMatchObject({ kind: "text+image", renderedPages: [1] });
+  });
+
+  it("does not render a born-digital page with little text and a small logo", async () => {
+    const { blocks, summary } = await readableContent(
+      fixturePdf([{ image: [450, 760, 100, 50], lines: ["Seite 2 von 2", "Vielen Dank fuer Ihren Auftrag."] }]),
+      "application/pdf",
+    );
+    expect(images(blocks)).toEqual([]);
+    expect(summary).toMatchObject({ kind: "text", renderedPages: [] });
+  });
+
+  it("does not render a blank page", async () => {
+    const { blocks, summary } = await readableContent(fixturePdf([[]]), "application/pdf");
+    expect(images(blocks)).toEqual([]);
+    expect(texts(blocks)).toEqual(["[Page 1 is blank.]"]);
+    expect(summary.kind).toBe("none");
+  });
+
   it("renders at most maxRenderedPages pages", async () => {
     const pages = Array.from({ length: READABLE_LIMITS.maxRenderedPages + 2 }, () => "scan" as const);
     const { blocks, summary } = await readableContent(fixturePdf(pages), "application/pdf");
     expect(images(blocks)).toHaveLength(READABLE_LIMITS.maxRenderedPages);
     expect(summary.renderedPages).toEqual([1, 2, 3]);
     expect(summary.truncated).toBe(true);
+  });
+});
+
+describe("readableContent: characters pdf.js cannot decode", () => {
+  // Stripe-generated invoices map the hyphen, minus sign and dash to U+0000 in their ToUnicode
+  // CMap: "Y9CEGLYM-0003" came out as "Y9CEGLYM\u00000003", "-€85.43" lost its minus.
+  const garbled = () =>
+    fixturePdf([{ lines: ["Invoice number AB12CD34-0003", "Credit -85.43 EUR", "Oct 24-Nov 24, 2026"], font: "nul-hyphen" }]);
+
+  it("replaces them with U+FFFD, says so, and attaches the page image to read them from", async () => {
+    const { blocks, summary } = await readableContent(garbled(), "application/pdf");
+    const [text] = texts(blocks);
+    expect(text).toContain("Invoice number AB12CD34\uFFFD0003");
+    expect(text).toContain("Credit \uFFFD85.43 EUR");
+    expect(text).toContain("(3 undecodable characters shown as \uFFFD; page image attached)");
+    expect(texts(blocks).join(" ")).toMatch(/Some characters on page 1 could not be decoded .* page 1 is attached as an image/);
+    expect(images(blocks)).toHaveLength(1);
+    expect(summary).toMatchObject({ kind: "text+image", textPages: [1], renderedPages: [1] });
+  });
+
+  it("never lets a control character reach the content or its JSON", async () => {
+    const result = withJsonText(
+      await binaryResult({
+        uri: "lexware://files/f1",
+        data: garbled(),
+        contentType: "application/pdf",
+        structuredContent: { fileId: "f1" },
+        message: "Downloaded.",
+      }),
+    );
+    const json = JSON.stringify(result);
+    expect(json).not.toMatch(/\\u000[0-8bcef]|\\u001[0-9a-f]/);
+    for (const block of result.content) {
+      if (block.type === "text") expect(block.text).not.toMatch(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/);
+    }
+  });
+
+  it("sanitizes control characters in text files too", async () => {
+    const { blocks, summary } = await readableContent(Buffer.from("<ID>RE\u00001</ID>\r\n"), "application/xml");
+    expect(texts(blocks)[0]).toBe("<ID>RE\uFFFD1</ID>\r\n");
+    expect(summary.note).toBe("1 control character was replaced with \uFFFD.");
   });
 });
 
