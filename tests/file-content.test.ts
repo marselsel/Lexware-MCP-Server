@@ -161,7 +161,9 @@ describe.skipIf(!canvas)("readableContent: PDF without a text layer (scan)", () 
     }
     expect(top!.height).toBe(bottom!.height);
     expect(summary).toMatchObject({ renderedPages: [1] });
-    expect(summary.note).toMatch(/Page 1 is very tall \(e\.g\. a till receipt\) and is attached as two overlapping images/);
+    expect(texts(blocks).join(" ")).toMatch(
+      /Page 1 is very tall \(e\.g\. a till receipt\) and is attached as two images each, top half first\. The halves overlap by a few lines .* count a line item that appears in both only once/,
+    );
   });
 
   it("renders a page without text as PNG when the PDF holds no image (vector drawing)", async () => {
@@ -339,14 +341,16 @@ describe("readableContent: image attachments", () => {
     for (let y = 100; y < 7200; y += 80) ctx.fillText("Artikel 4711   1 x 2,49 EUR", 40, y);
     const jpeg = await photo.encode("jpeg", 80);
     const { blocks, summary } = await readableContent(jpeg, "image/jpeg");
-    expect(blocks).toHaveLength(2);
-    for (const block of blocks) {
+    expect(blocks.map((b) => b.type)).toEqual(["image", "image", "text"]);
+    // The overlap warning is a text block the model reads, not only structuredContent.
+    expect(texts(blocks)[0]).toMatch(/count a line item that appears in both only once/);
+    for (const block of images(blocks)) {
       const { width, height } = imageSize((block as { data: string }).data);
       expect(width * height).toBeLessThanOrEqual(READABLE_LIMITS.maxImagePixels);
       expect(height).toBeLessThanOrEqual(READABLE_LIMITS.maxImageSide);
       expect(width).toBeGreaterThanOrEqual(600); // one image would be 322 px wide
     }
-    expect(summary.note).toMatch(/^A tall image \(900×7200\), split into two overlapping images \d+ px wide, top half first/);
+    expect(summary.note).toMatch(/^A tall image \(900×7200\), split into two images \d+ px wide, top half first/);
   });
 
   withCanvas("downscales an oversized image to a JPEG within the size cap", async () => {

@@ -40,6 +40,18 @@ export type FileOutput = (typeof FILE_OUTPUT_MODES)[number];
  */
 export const AUTO_RESOURCE_MAX_BYTES = 1_500_000;
 
+/**
+ * The largest raw file attached because the readable form misses content (pages without their
+ * image, nothing readable at all), whatever `output` says (~6.7 MB as base64). That covers a
+ * phone photo saved as PDF; a larger file, usually a multi-page scan, would make a response
+ * clients that drop the blob carry for nothing, so a note points to output="resource".
+ */
+export const INCOMPLETE_RESOURCE_MAX_BYTES = 5_000_000;
+
+/** Warns the model about the overlap between the two halves of a tall image. */
+const OVERLAP_NOTE =
+  "The halves overlap by a few lines so nothing is cut in two: count a line item that appears in both only once.";
+
 /** The `output` parameter, shared by every download tool. */
 export const fileOutputParam = z
   .enum(FILE_OUTPUT_MODES)
@@ -47,9 +59,10 @@ export const fileOutputParam = z
   .describe(
     'How to return the file. "auto" (default): the readable form — extracted PDF text, page images ' +
       'for scanned pages, the image itself — plus the raw file as an embedded resource if it is at ' +
-      `most ${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. "readable": only the readable form (the raw ` +
-      'file is still sent when nothing readable could be extracted). "resource": only the raw file, ' +
-      'at any size, for clients that save embedded resources to disk.',
+      `most ${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. "readable": only the readable form. In both, ` +
+      'the raw file is also sent when the readable form misses content (e.g. a scanned page without ' +
+      `its image), up to ${INCOMPLETE_RESOURCE_MAX_BYTES / 1_000_000} MB. "resource": only the raw ` +
+      'file, at any size, for clients that save embedded resources to disk.',
   );
 
 type TextBlock = { type: "text"; text: string };
@@ -453,9 +466,12 @@ async function readImage(data: Buffer, mimeType: string, budget: Budget): Promis
       const width = Math.max(1, Math.floor(image.width * scale));
       const height = Math.max(1, Math.floor(image.height * scale));
       const note =
-        `A tall image (${image.width}×${image.height}), split into two overlapping images ${width} px wide, ` +
-        "top half first, to keep it legible.";
-      return { blocks: await splitTall(canvas, image, width, height, true), summary: { kind: "image" as const, note } };
+        `A tall image (${image.width}×${image.height}), split into two images ${width} px wide, top half first, ` +
+        `to keep it legible. ${OVERLAP_NOTE}`;
+      // The note goes out as text next to the images, where the model reads it, not only in
+      // structuredContent.
+      const tiles = await splitTall(canvas, image, width, height, true);
+      return { blocks: [...tiles, textBlock(`[${note}]`)], summary: { kind: "image" as const, note } };
     }
     const scale = Math.min(1, fitScale(image.width, image.height));
     const width = Math.max(1, Math.floor(image.width * scale));
@@ -592,8 +608,8 @@ function pageNotes(pdfPages: PdfPage[]): string[] {
   if (tall.length > 0) {
     const p = pages(tall);
     notes.push(
-      `${p.label} ${p.is} very tall (e.g. a till receipt) and ${p.is} attached as two overlapping images each, ` +
-        "top half first.",
+      `${p.label} ${p.is} very tall (e.g. a till receipt) and ${p.is} attached as two images each, top half ` +
+        `first. ${OVERLAP_NOTE}`,
     );
   }
   const garbled = pdfPages.filter((p) => p.undecodable > 0);

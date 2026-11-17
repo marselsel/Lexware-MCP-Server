@@ -9,7 +9,7 @@ vi.mock("../src/tools/file-content.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/tools/file-content.js")>()),
   readableContent: async () => readable.value,
 }));
-const { AUTO_RESOURCE_MAX_BYTES } = await import("../src/tools/file-content.js");
+const { AUTO_RESOURCE_MAX_BYTES, INCOMPLETE_RESOURCE_MAX_BYTES } = await import("../src/tools/file-content.js");
 const { binaryResult } = await import("../src/tools/shared.js");
 
 const call = (data: Buffer, output: "auto" | "readable") =>
@@ -30,6 +30,23 @@ describe("binaryResult with pages missing from the readable form", () => {
       text: "[The original file is attached as an embedded resource, because page 1 is not in the readable form above.]",
     });
     expect(res.structuredContent).not.toHaveProperty("resourceOmitted");
+  });
+
+  it.each(["readable", "auto"] as const)('caps it at INCOMPLETE_RESOURCE_MAX_BYTES in "%s", with a note', async (output) => {
+    readable.value = stamp;
+    const atCap = await call(Buffer.alloc(INCOMPLETE_RESOURCE_MAX_BYTES, 0x20), output);
+    expect(atCap.content.at(-1)).toMatchObject({ type: "resource" });
+
+    const big = Buffer.alloc(INCOMPLETE_RESOURCE_MAX_BYTES + 1, 0x20);
+    const res = await call(big, output);
+    expect(res.content.map((c) => c.type)).not.toContain("resource");
+    expect(res.content.at(-1)).toEqual({
+      type: "text",
+      text:
+        "[The original file (5.0 MB) is not attached although page 1 is not in the readable form above: files over " +
+        '5 MB are only sent with output="resource". Call again with output="resource" to get it.]',
+    });
+    expect(res.structuredContent).toMatchObject({ resourceOmitted: true });
   });
 
   it("drops it in readable mode when nothing is missing", async () => {

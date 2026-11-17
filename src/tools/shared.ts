@@ -1,7 +1,12 @@
 import type { LexwareClient } from "../lexware/client.js";
 import { isNotFound } from "../lexware/errors.js";
 import type { Paged } from "../lexware/types.js";
-import { AUTO_RESOURCE_MAX_BYTES, type FileOutput, readableContent } from "./file-content.js";
+import {
+  AUTO_RESOURCE_MAX_BYTES,
+  type FileOutput,
+  INCOMPLETE_RESOURCE_MAX_BYTES,
+  readableContent,
+} from "./file-content.js";
 
 /** Default page size for list tools. */
 export const DEFAULT_PAGE_SIZE = 25;
@@ -119,24 +124,39 @@ export async function binaryResult(opts: {
   // keeps it up to the size cap, and past it says how to get it.
   const missing = readable.summary.missingPageImages ?? [];
   const incomplete = readable.summary.kind === "none" || missing.length > 0;
-  const withinAuto = output === "auto" && opts.data.length <= AUTO_RESOURCE_MAX_BYTES;
-  const keepResource = incomplete || withinAuto;
-  const omitted = output === "auto" && !keepResource;
+  const size = opts.data.length;
+  const withinAuto = output === "auto" && size <= AUTO_RESOURCE_MAX_BYTES;
+  // Content only the raw file has is attached in every mode, up to a cap.
+  const keepResource = withinAuto || (incomplete && size <= INCOMPLETE_RESOURCE_MAX_BYTES);
+  const omitted = !keepResource && (output === "auto" || incomplete);
+  const mb = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
+  const pageList = `page${missing.length > 1 ? "s" : ""} ${missing.join(", ")}`;
   const notes: { type: "text"; text: string }[] = [];
-  if (omitted) {
+  if (omitted && incomplete) {
     notes.push({
       type: "text",
       text:
-        `[The original file (${(opts.data.length / 1_000_000).toFixed(1)} MB) is not attached: "auto" only ` +
-        `attaches files up to ${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. Call again with output="resource" to get it.]`,
+        `[The original file (${mb(size)}) is not attached although ` +
+        (missing.length > 0
+          ? `${pageList} ${missing.length > 1 ? "are" : "is"} not in the readable form above`
+          : "nothing readable came out of it") +
+        `: files over ${INCOMPLETE_RESOURCE_MAX_BYTES / 1_000_000} MB are only sent with output="resource". ` +
+        `Call again with output="resource" to get it.]`,
+    });
+  } else if (omitted) {
+    notes.push({
+      type: "text",
+      text:
+        `[The original file (${mb(size)}) is not attached: "auto" only attaches files up to ` +
+        `${AUTO_RESOURCE_MAX_BYTES / 1_000_000} MB. Call again with output="resource" to get it.]`,
     });
   } else if (missing.length > 0 && !withinAuto) {
-    // Attached although "readable" or the size cap would leave it out: say why.
+    // Attached although "readable" or the auto size cap would leave it out: say why.
     notes.push({
       type: "text",
       text:
-        `[The original file is attached as an embedded resource, because page${missing.length > 1 ? "s" : ""} ` +
-        `${missing.join(", ")} ${missing.length > 1 ? "are" : "is"} not in the readable form above.]`,
+        `[The original file is attached as an embedded resource, because ${pageList} ` +
+        `${missing.length > 1 ? "are" : "is"} not in the readable form above.]`,
     });
   }
   return {
