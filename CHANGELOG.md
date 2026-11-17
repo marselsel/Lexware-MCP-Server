@@ -38,13 +38,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   come back as U+FFFD with a note, plus the page image to read them from. A new `output` parameter
   picks `auto` (default: readable blocks, plus the raw file as an embedded resource up to 1.5 MB, so
   Claude Code works as before for ordinary invoices), `readable` (text/images only) or `resource`
-  (only the raw file, the old shape); the raw file is kept whenever the readable form misses
-  content, e.g. a scanned page that got no image. Pages read (30), text length (30,000 characters), page images
-  (3, at most 2.4 MP each) and decoded image size (50 MP) are capped; heavy pages render one at a
-  time across requests, within a 20 s budget per call. One helper serves all three tools. Uses
-  `unpdf` (text) and the optional `@napi-rs/canvas` (page images); without the canvas, a warning is
-  logged at start-up and scans come back with a note instead of an image. Deploy with
-  `--memory=1Gi` on Cloud Run (see `docs/cloud-run.md`).
+  (only the raw file, the old shape). A page that needs an image but did not get one (page-image
+  cap, time budget, busy server, missing canvas, image over the decode limit) is listed in
+  `readable.missingPageImages`, and the raw file is then attached in every mode, at any size.
+  Pages read (30), text length (30,000 characters), page images (3 pages, 2.4 MP and 2576 px each;
+  a page taller than 1:4.5, such as a till receipt, goes out as two overlapping halves) and decoded
+  image size (50 MP, `LEXWARE_MAX_DECODE_MP`) are capped; heavy pages render one at a time across
+  requests, within a 20 s budget per call (`LEXWARE_RENDER_TIME_BUDGET_MS`), and a render that runs
+  out of time can no longer hold the render slot. One helper serves all three tools. Uses `unpdf`
+  (text) and the optional `@napi-rs/canvas` (page images); without the canvas, a warning is logged
+  at start-up and scans are listed as missing. CI checks in the built image that the canvas loads
+  and renders. Deploy with `--memory=1Gi` on Cloud Run, or set `LEXWARE_MAX_DECODE_MP=20` for
+  512 MiB (see `docs/cloud-run.md`).
 - Every tool has a human-readable `title` (e.g. "Issue invoice (finalize, irreversible)"), which
   clients show instead of the tool name. It is set both as the top-level `title` and as
   `annotations.title`: the spec reads the first, Anthropic's directory checklist asks for the second.
