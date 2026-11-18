@@ -60,9 +60,9 @@ describe("get-voucherlist filters", () => {
     await handlers["get-voucherlist"]({
       voucherType: "any",
       voucherStatus: "any",
-      voucherNumber: "RE0069",
+      voucherNumber: "RE-2026-0042",
     });
-    expect(query(get).voucherNumber).toBe("RE0069");
+    expect(query(get).voucherNumber).toBe("RE-2026-0042");
   });
 
   it("composes sortBy + sortDirection into Lexware's single `sort` parameter", async () => {
