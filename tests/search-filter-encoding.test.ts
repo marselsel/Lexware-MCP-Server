@@ -89,7 +89,7 @@ describe("list-contacts search filters", () => {
 
   it("does not disturb an ordinary name search", async () => {
     const { handlers, get } = setup();
-    await handlers["list-contacts"]({ name: "FLOYT Mobility" });
-    expect(query(get).name).toBe("FLOYT Mobility");
+    await handlers["list-contacts"]({ name: "Example Logistics" });
+    expect(query(get).name).toBe("Example Logistics");
   });
 });

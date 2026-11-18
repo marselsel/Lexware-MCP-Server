@@ -115,8 +115,8 @@ describe("the URL that actually goes on the wire", () => {
     expect(query().get("number")).toBe("10001");
 
     const b = setup();
-    await b.invoke("get-voucherlist", { voucherNumber: "RE0069" });
-    expect(b.query().get("voucherNumber")).toBe("RE0069");
+    await b.invoke("get-voucherlist", { voucherNumber: "RE-2026-0042" });
+    expect(b.query().get("voucherNumber")).toBe("RE-2026-0042");
   });
 
   it("never emits an empty voucherType/voucherStatus, which Lexware answers with a 500", async () => {

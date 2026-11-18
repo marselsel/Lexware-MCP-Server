@@ -359,7 +359,7 @@ export function registerDocumentReadTools(
           .string()
           .optional()
           .describe(
-            'Exact voucher number, e.g. "RE0069". Matches the WHOLE number only — a prefix or ' +
+            'Exact voucher number, e.g. "RE-2026-0042". Matches the WHOLE number only — a prefix or ' +
               "substring returns nothing. This is the only way to find a document by its number; " +
               "there is no search-by-number endpoint.",
           ),

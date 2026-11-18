@@ -198,7 +198,7 @@ behaviour, this release changes what you get back.
   Lexware answer **HTTP 500**, so it is rejected locally instead. The two combinations Lexware refuses
   — `any` with anything else, and `overdue`, which it derives from the due date rather than storing —
   are caught before a request is spent, with an error that says why.
-- **`get-voucherlist` can now answer "what changed since ...?" and "which document is RE0069?".** The
+- **`get-voucherlist` can now answer "what changed since ...?" and "which document is RE-2026-0042?".** The
   endpoint has always accepted `createdDateFrom/To`, `updatedDateFrom/To`, `voucherNumber` and `sort`;
   the tool exposed none of them. Without the created/updated bounds an incremental sync was
   impossible, because `voucherDate` is the document's own date, which the user sets and often
